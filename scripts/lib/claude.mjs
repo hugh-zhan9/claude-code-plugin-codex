@@ -220,6 +220,23 @@ export async function runAdversarialReview({
   }
 }
 
+export function isUnsupportedNativeReviewError(error) {
+  if (!error) {
+    return false;
+  }
+
+  if (error.code === "UNSUPPORTED_NATIVE_REVIEW") {
+    return true;
+  }
+
+  const text = errorText(error);
+
+  return (
+    /\/review/i.test(text) &&
+    /(unknown|unsupported|not supported|not available|unrecognized)/i.test(text)
+  );
+}
+
 async function closeClaudeQuery(queryResult) {
   try {
     if (typeof queryResult?.close === "function") {
@@ -249,6 +266,21 @@ function attachCollectedMessages(error, messages) {
   }
 
   return normalizedError;
+}
+
+function errorText(error) {
+  if (!error || typeof error !== "object") {
+    return String(error ?? "");
+  }
+
+  const parts = [
+    error.message,
+    error.code,
+    error.subtype,
+    ...(Array.isArray(error.errors) ? error.errors : [])
+  ];
+
+  return parts.filter(Boolean).join("\n");
 }
 
 function isAbortError(error, abortController) {
@@ -327,7 +359,7 @@ function buildAdversarialReviewPromptFromInput(prompt) {
     return String(prompt ?? "");
   }
 
-  return buildAdversarialReviewPrompt(prompt);
+  return buildAdversarialReviewPrompt(prompt, { focus: prompt.focus ?? "" });
 }
 
 function parseAdversarialReviewJson(text) {

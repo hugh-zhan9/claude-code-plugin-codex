@@ -46,14 +46,15 @@ test("companion setup smoke command is available", () => {
 
   assert.equal(result.status, 0);
   assert.match(result.stdout, /# Claude Code Plugin Setup/);
-  assert.match(result.stdout, /companion runtime will be implemented in later tasks/i);
+  assert.match(result.stdout, /## Checks/);
+  assert.match(result.stdout, /Node\.js: OK/);
 });
 
-test("companion rejects commands that are not implemented yet", () => {
+test("companion validates foreground task prompts", () => {
   const result = spawnSync("node", ["scripts/cc-companion.mjs", "task"], {
     encoding: "utf8"
   });
 
   assert.equal(result.status, 1);
-  assert.match(result.stderr, /Command not implemented yet: task/);
+  assert.match(result.stderr, /Task prompt is required/);
 });

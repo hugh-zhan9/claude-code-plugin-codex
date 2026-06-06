@@ -137,6 +137,27 @@ export function renderAdversarialReview(payload = {}) {
   return finish(lines);
 }
 
+export function renderAdversarialReviewFailure({
+  text = "",
+  parseError = "",
+  target
+} = {}) {
+  const lines = ["# Claude Code Adversarial Review", ""];
+
+  if (target) {
+    lines.push(`Target: ${target}`, "");
+  }
+
+  lines.push("Structured output could not be parsed.");
+
+  if (parseError) {
+    lines.push(`Parse error: ${parseError}`);
+  }
+
+  lines.push("", "## Raw Output", text || "No review text returned.");
+  return finish(lines);
+}
+
 export function renderJson(value) {
   return `${JSON.stringify(value, null, 2)}\n`;
 }
