@@ -1,0 +1,40 @@
+{
+  "name": "claude-code",
+  "version": "0.1.0",
+  "description": "Delegate Codex tasks and reviews to local Claude Code.",
+  "author": {
+    "name": "OpenAI",
+    "url": "https://openai.com"
+  },
+  "homepage": "https://github.com/openai/codex",
+  "repository": "https://github.com/openai/codex",
+  "license": "Apache-2.0",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "delegation",
+    "code-review"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Claude Code",
+    "shortDescription": "Delegate Codex tasks and reviews to local Claude Code.",
+    "longDescription": "A local Codex plugin that exposes skills for checking Claude Code readiness, delegating tasks, and requesting code reviews.",
+    "developerName": "OpenAI",
+    "category": "Productivity",
+    "capabilities": [
+      "Delegation",
+      "Code Review"
+    ],
+    "websiteURL": "https://openai.com",
+    "privacyPolicyURL": "https://openai.com/policies/privacy-policy/",
+    "termsOfServiceURL": "https://openai.com/policies/terms-of-use/",
+    "defaultPrompt": [
+      "Check Claude Code plugin readiness.",
+      "Delegate this task to Claude Code.",
+      "Ask Claude Code to review my changes."
+    ],
+    "brandColor": "#10A37F",
+    "screenshots": []
+  }
+}
