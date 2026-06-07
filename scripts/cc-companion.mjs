@@ -5,6 +5,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseCompanionArgs } from "./lib/args.mjs";
 import {
+  ensureBroker,
+  isBrokerReachable,
+  loadBrokerSession,
+  requestBroker
+} from "./lib/broker-lifecycle.mjs";
+import {
   importClaudeSdk,
   isUnsupportedNativeReviewError,
   runAdversarialReview,
@@ -58,7 +64,7 @@ export async function runCompanion(argv = process.argv.slice(2), deps = {}) {
   const stateDir = getWorkspaceStateDir(workspaceRoot, { stateRoot });
 
   if (parsed.command === "setup") {
-    return runSetup(parsed, deps);
+    return runSetup({ parsed, deps, stateDir });
   }
 
   if (parsed.command === "task") {
@@ -82,7 +88,7 @@ export async function runCompanion(argv = process.argv.slice(2), deps = {}) {
   }
 
   if (parsed.command === "cancel") {
-    return runCancel({ parsed, deps, stateDir });
+    return runCancel({ parsed, deps, workspaceRoot, stateDir });
   }
 
   if (parsed.command === "task-worker") {
@@ -102,7 +108,7 @@ export async function main(argv = process.argv.slice(2)) {
   }
 }
 
-async function runSetup(parsed, deps) {
+async function runSetup({ parsed, deps, stateDir }) {
   const diagnostics = deps.diagnostics ?? {};
   const checks = [];
 
@@ -124,6 +130,7 @@ async function runSetup(parsed, deps) {
 
   const sdkImportCheck = await checkSdkImport({ diagnostics, deps });
   checks.push(sdkImportCheck);
+  checks.push(await checkBroker({ diagnostics, deps, stateDir }));
 
   if (Object.hasOwn(diagnostics, "claudeReady")) {
     checks.push({
@@ -196,15 +203,31 @@ async function executeTaskJob({ job, deps, workspaceRoot, stateDir }) {
 
   const requestOptions = job.request?.options ?? {};
   try {
-    const result = await runClaudeTask({
-      sdk: deps.sdk,
-      prompt: job.request?.prompt ?? "",
-      cwd: workspaceRoot,
-      model: requestOptions.model,
-      effort: requestOptions.effort,
-      permission: taskPermission(requestOptions),
-      resumeSessionId: job.request?.resumeSessionId ?? null,
-      dangerouslyBypassPermissions: requestOptions.dangerouslyBypassPermissions
+    const result = await runClaudeExecution({
+      kind: "task",
+      job,
+      deps,
+      workspaceRoot,
+      stateDir,
+      directRun: () =>
+        runClaudeTask({
+          sdk: deps.sdk,
+          prompt: job.request?.prompt ?? "",
+          cwd: workspaceRoot,
+          model: requestOptions.model,
+          effort: requestOptions.effort,
+          permission: taskPermission(requestOptions),
+          resumeSessionId: job.request?.resumeSessionId ?? null,
+          dangerouslyBypassPermissions:
+            requestOptions.dangerouslyBypassPermissions
+        }),
+      request: {
+        kind: "task",
+        jobId: job.id,
+        prompt: job.request?.prompt ?? "",
+        options: requestOptions,
+        resumeSessionId: job.request?.resumeSessionId ?? null
+      }
     });
 
     storeClaudeResult(job, result);
@@ -216,12 +239,19 @@ async function executeTaskJob({ job, deps, workspaceRoot, stateDir }) {
       return rendered || "No final output returned.\n";
     }
 
+    if (isInterruptedResult(result)) {
+      markCancelled(job, result.error?.message ?? "Claude task cancelled");
+      job.result = result;
+      saveJob(job, { stateDir });
+      throw new Error(job.error.message);
+    }
+
     markFailed(job, result.error?.message ?? `Claude task ${result.status}`);
     job.result = result;
     saveJob(job, { stateDir });
     throw new Error(job.error.message);
   } catch (error) {
-    if (job.status !== "failed") {
+    if (job.status !== "failed" && job.status !== "cancelled") {
       markFailed(job, error);
       saveJob(job, { stateDir });
     }
@@ -287,14 +317,18 @@ function runResult({ parsed, stateDir }) {
   return renderResult(job);
 }
 
-async function runCancel({ parsed, deps, stateDir }) {
+async function runCancel({ parsed, deps, workspaceRoot, stateDir }) {
   const job = parsed.jobRef
     ? findJob(parsed.jobRef, { stateDir })
     : findActiveJob({ stateDir }) ?? findJob("", { stateDir });
+  const brokerClient =
+    job.status === "running"
+      ? await resolveBrokerClient({ deps, workspaceRoot, stateDir })
+      : deps.brokerClient ?? null;
   const result = await cancelJob({
     job,
     stateDir,
-    brokerClient: deps.brokerClient ?? null
+    brokerClient
   });
 
   return renderCancel(result);
@@ -338,31 +372,27 @@ async function runReview({ parsed, deps, workspaceRoot, stateDir }) {
   try {
     let result;
 
-    try {
-      result = await runNativeReview({
-        sdk: deps.sdk,
-        cwd: workspaceRoot,
+    result = await runClaudeExecution({
+      kind: "review",
+      job,
+      deps,
+      workspaceRoot,
+      stateDir,
+      directRun: () =>
+        runDirectReview({
+          deps,
+          workspaceRoot,
+          context,
+          options: parsed.options
+        }),
+      request: {
+        kind: "review",
+        jobId: job.id,
         context,
-        model: parsed.options.model,
-        effort: parsed.options.effort
-      });
-
-      if (isUnsupportedNativeReviewError(result.error)) {
-        throw unsupportedNativeReviewResultError(result.error);
+        fallbackPrompt: buildFallbackReviewPrompt(context),
+        options: parsed.options
       }
-    } catch (error) {
-      if (!isUnsupportedNativeReviewError(error)) {
-        throw error;
-      }
-
-      result = await runFallbackReview({
-        sdk: deps.sdk,
-        prompt: buildFallbackReviewPrompt(context),
-        cwd: workspaceRoot,
-        model: parsed.options.model,
-        effort: parsed.options.effort
-      });
-    }
+    });
 
     assertCompletedClaudeResult(result, "Claude review");
     storeClaudeResult(job, result);
@@ -401,12 +431,26 @@ async function runAdversarial({ parsed, deps, workspaceRoot, stateDir }) {
   });
 
   try {
-    const result = await runAdversarialReview({
-      sdk: deps.sdk,
-      prompt,
-      cwd: workspaceRoot,
-      model: parsed.options.model,
-      effort: parsed.options.effort
+    const result = await runClaudeExecution({
+      kind: "adversarial-review",
+      job,
+      deps,
+      workspaceRoot,
+      stateDir,
+      directRun: () =>
+        runAdversarialReview({
+          sdk: deps.sdk,
+          prompt,
+          cwd: workspaceRoot,
+          model: parsed.options.model,
+          effort: parsed.options.effort
+        }),
+      request: {
+        kind: "adversarial-review",
+        jobId: job.id,
+        prompt,
+        options: parsed.options
+      }
     });
 
     assertCompletedClaudeResult(result, "Claude adversarial review");
@@ -462,6 +506,109 @@ function buildContext({ parsed, workspaceRoot }) {
   return buildReviewContext({ workspaceRoot, target });
 }
 
+async function runDirectReview({ deps, workspaceRoot, context, options }) {
+  try {
+    const result = await runNativeReview({
+      sdk: deps.sdk,
+      cwd: workspaceRoot,
+      context,
+      model: options.model,
+      effort: options.effort
+    });
+
+    if (isUnsupportedNativeReviewError(result.error)) {
+      throw unsupportedNativeReviewResultError(result.error);
+    }
+
+    return result;
+  } catch (error) {
+    if (!isUnsupportedNativeReviewError(error)) {
+      throw error;
+    }
+
+    return runFallbackReview({
+      sdk: deps.sdk,
+      prompt: buildFallbackReviewPrompt(context),
+      cwd: workspaceRoot,
+      model: options.model,
+      effort: options.effort
+    });
+  }
+}
+
+async function runClaudeExecution({
+  deps,
+  workspaceRoot,
+  stateDir,
+  directRun,
+  request
+}) {
+  if (deps.disableBroker) {
+    return directRun();
+  }
+
+  const brokerClient = await resolveBrokerClient({ deps, workspaceRoot, stateDir });
+
+  try {
+    return await brokerClient.run(request);
+  } catch (error) {
+    throw normalizeBrokerError(error);
+  }
+}
+
+async function resolveBrokerClient({ deps, workspaceRoot, stateDir }) {
+  if (deps.brokerClient) {
+    return deps.brokerClient;
+  }
+
+  const session = await ensureBroker({ stateDir, workspaceRoot });
+
+  return {
+    async run(params) {
+      return unwrapBrokerResponse(
+        await requestBroker(session.endpoint, {
+          id: `run-${params.jobId ?? Date.now()}`,
+          method: "run",
+          params
+        })
+      );
+    },
+    async interrupt(params) {
+      return unwrapBrokerResponse(
+        await requestBroker(session.endpoint, {
+          id: `interrupt-${params.jobId ?? Date.now()}`,
+          method: "interrupt",
+          params
+        })
+      );
+    }
+  };
+}
+
+function unwrapBrokerResponse(response) {
+  if (response?.error) {
+    const error = new Error(response.error.message ?? "Broker request failed.");
+    error.code = response.error.code;
+    throw error;
+  }
+
+  return response?.result;
+}
+
+function normalizeBrokerError(error) {
+  if (error?.code === "BUSY") {
+    return new Error(
+      "A Claude Code job is already running in this workspace. Run claude-code-status or claude-code-cancel."
+    );
+  }
+
+  return error;
+}
+
+function isInterruptedResult(result) {
+  return result?.status === "interrupted" || result?.interrupted === true;
+}
+
 function storeClaudeResult(job, result) {
   job.claudeSessionId = result.claudeSessionId ?? null;
 }
@@ -499,6 +646,35 @@ async function checkSdkImport({ diagnostics, deps }) {
       detail: error?.message ?? String(error)
     };
   }
+}
+
+async function checkBroker({ diagnostics, deps, stateDir }) {
+  if (Object.hasOwn(diagnostics, "brokerReachable")) {
+    return {
+      name: "Claude Broker",
+      ok: true,
+      detail: diagnostics.brokerReachable ? "running" : "not running"
+    };
+  }
+
+  if (typeof deps.checkBroker === "function") {
+    const brokerReachable = await deps.checkBroker();
+    return {
+      name: "Claude Broker",
+      ok: true,
+      detail: brokerReachable ? "running" : "not running"
+    };
+  }
+
+  const session = loadBrokerSession(stateDir);
+  const reachable =
+    Boolean(session?.endpoint) && (await isBrokerReachable(session.endpoint));
+
+  return {
+    name: "Claude Broker",
+    ok: true,
+    detail: reachable ? "running" : "not running (starts on demand)"
+  };
 }
 
 function setupNextSteps(checks) {

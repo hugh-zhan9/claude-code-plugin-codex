@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   createBrokerState,
+  createBrokerRuntime,
   handleBrokerRequest,
   startBrokerServer
 } from "../scripts/claude-broker.mjs";
@@ -15,6 +16,7 @@ import {
   requestBroker
 } from "../scripts/lib/broker-lifecycle.mjs";
 import { ensureDir } from "../scripts/lib/fs.mjs";
+import { createFakeClaudeSdk, taskMessages } from "./fake-claude-sdk.mjs";
 import { makeTempDir } from "./helpers.mjs";
 
 test("broker run request returns runtime result", async () => {
@@ -85,6 +87,65 @@ test("broker interrupt cancels active runtime", async () => {
 
   assert.equal(interrupt.result.interrupted, true);
   await running;
+});
+
+test("broker runtime dispatches task requests to Claude SDK", async () => {
+  const sdk = createFakeClaudeSdk({ messages: taskMessages });
+  const runtime = createBrokerRuntime({
+    sdk,
+    workspaceRoot: "/repo"
+  });
+
+  const result = await runtime.run({
+    params: {
+      kind: "task",
+      prompt: "fix auth",
+      options: { model: "sonnet", effort: "high" },
+      resumeSessionId: "previous-session"
+    }
+  });
+
+  assert.equal(result.finalText, "Task completed.");
+  assert.equal(sdk.calls[0].prompt, "fix auth");
+  assert.equal(sdk.calls[0].options.cwd, "/repo");
+  assert.equal(sdk.calls[0].options.model, "sonnet");
+  assert.equal(sdk.calls[0].options.effort, "high");
+  assert.equal(sdk.calls[0].options.resume, "previous-session");
+  assert.equal(sdk.calls[0].options.permissionMode, "acceptEdits");
+});
+
+test("broker interrupt aborts the active run controller", async () => {
+  let activeController = null;
+  const state = createBrokerState({
+    runtime: {
+      async run(_request, { abortController }) {
+        activeController = abortController;
+        await waitFor(() => abortController.signal.aborted);
+        return { status: "interrupted", interrupted: true, finalText: "" };
+      },
+      async interrupt() {
+        return { interrupted: true, detail: "interrupted" };
+      }
+    }
+  });
+
+  const running = handleBrokerRequest(state, {
+    id: "1",
+    method: "run",
+    params: { jobId: "task-1", kind: "task" }
+  });
+  await waitFor(() => activeController !== null);
+
+  const interrupt = await handleBrokerRequest(state, {
+    id: "2",
+    method: "interrupt",
+    params: { jobId: "task-1" }
+  });
+
+  assert.equal(activeController.signal.aborted, true);
+  assert.equal(interrupt.result.interrupted, true);
+  const runResponse = await running;
+  assert.equal(runResponse.result.interrupted, true);
 });
 
 test("broker server handles JSONL requests on long default-style endpoint", async () => {
@@ -163,4 +224,18 @@ function closeServer(server) {
       }
     });
   });
+}
+
+async function waitFor(predicate, { timeoutMs = 1000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (predicate()) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+
+  throw new Error("Timed out waiting for condition.");
 }

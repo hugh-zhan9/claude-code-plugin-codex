@@ -5,6 +5,14 @@ import net from "node:net";
 import { fileURLToPath } from "node:url";
 import { appendLog, ensureDir } from "./lib/fs.mjs";
 import { getBrokerLogFile } from "./lib/broker-endpoint.mjs";
+import {
+  importClaudeSdk,
+  isUnsupportedNativeReviewError,
+  runAdversarialReview,
+  runClaudeTask,
+  runFallbackReview,
+  runNativeReview
+} from "./lib/claude.mjs";
 
 const BUSY_MESSAGE = "A Claude Code job is already running in this workspace.";
 
@@ -14,6 +22,32 @@ export function createBrokerState({ runtime }) {
   }
 
   return { active: null, runtime };
+}
+
+export function createBrokerRuntime({ sdk = null, workspaceRoot = process.cwd() } = {}) {
+  let activeAbortController = null;
+
+  return {
+    async run(request, { abortController = null } = {}) {
+      const params = request?.params ?? {};
+      activeAbortController = abortController;
+
+      try {
+        return await runBrokerExecution({
+          sdk,
+          workspaceRoot,
+          params,
+          abortController
+        });
+      } finally {
+        activeAbortController = null;
+      }
+    },
+    async interrupt() {
+      activeAbortController?.abort();
+      return { interrupted: true, detail: "interrupted" };
+    }
+  };
 }
 
 export async function handleBrokerRequest(state, request) {
@@ -98,11 +132,12 @@ async function handleRunRequest(state, request, id) {
     };
   }
 
+  const abortController = new AbortController();
   const jobId = request?.params?.jobId ?? null;
-  state.active = { jobId, startedAt: new Date().toISOString() };
+  state.active = { jobId, startedAt: new Date().toISOString(), abortController };
 
   try {
-    const result = await state.runtime.run(request);
+    const result = await state.runtime.run(request, { abortController });
     return { id, result };
   } finally {
     state.active = null;
@@ -123,8 +158,99 @@ async function handleInterruptRequest(state, request, id) {
     };
   }
 
-  const result = await state.runtime.interrupt(params);
+  state.active.abortController?.abort();
+  const result = await state.runtime.interrupt(params, {
+    abortController: state.active.abortController
+  });
   return { id, result };
+}
+
+async function runBrokerExecution({
+  sdk,
+  workspaceRoot,
+  params,
+  abortController
+}) {
+  const claudeSdk = sdk ?? (await importClaudeSdk());
+  const options = params.options ?? {};
+
+  if (params.kind === "task") {
+    return runClaudeTask({
+      sdk: claudeSdk,
+      prompt: params.prompt ?? "",
+      cwd: workspaceRoot,
+      model: options.model,
+      effort: options.effort,
+      permission: taskPermission(options),
+      resumeSessionId: params.resumeSessionId ?? null,
+      dangerouslyBypassPermissions: options.dangerouslyBypassPermissions,
+      abortController
+    });
+  }
+
+  if (params.kind === "review") {
+    return runBrokerReview({
+      sdk: claudeSdk,
+      workspaceRoot,
+      params,
+      abortController
+    });
+  }
+
+  if (params.kind === "adversarial-review") {
+    return runAdversarialReview({
+      sdk: claudeSdk,
+      prompt: params.prompt,
+      cwd: workspaceRoot,
+      model: options.model,
+      effort: options.effort,
+      abortController
+    });
+  }
+
+  throw new Error(`Unsupported broker run kind: ${params.kind}`);
+}
+
+async function runBrokerReview({ sdk, workspaceRoot, params, abortController }) {
+  const options = params.options ?? {};
+
+  try {
+    const result = await runNativeReview({
+      sdk,
+      cwd: workspaceRoot,
+      context: params.context,
+      model: options.model,
+      effort: options.effort,
+      abortController
+    });
+
+    if (isUnsupportedNativeReviewError(result.error)) {
+      throw result.error;
+    }
+
+    return result;
+  } catch (error) {
+    if (!isUnsupportedNativeReviewError(error)) {
+      throw error;
+    }
+
+    return runFallbackReview({
+      sdk,
+      prompt: params.fallbackPrompt ?? "",
+      cwd: workspaceRoot,
+      model: options.model,
+      effort: options.effort,
+      abortController
+    });
+  }
+}
+
+function taskPermission(options) {
+  if (options.readOnly) {
+    return "read-only";
+  }
+
+  return "workspace-write";
 }
 
 async function handleBrokerLine({ line, socket, state, server, logFile }) {
@@ -240,18 +366,6 @@ function parseBrokerArgs(argv) {
   return options;
 }
 
-function createPlaceholderRuntime({ workspaceRoot = null } = {}) {
-  return {
-    workspaceRoot,
-    async run() {
-      throw new Error("Broker runtime is not wired yet.");
-    },
-    async interrupt() {
-      return { interrupted: true };
-    }
-  };
-}
-
 async function main() {
   const options = parseBrokerArgs(process.argv.slice(2));
 
@@ -265,7 +379,7 @@ async function main() {
 
   await startBrokerServer({
     endpoint: options.endpoint,
-    runtime: createPlaceholderRuntime({ workspaceRoot: options.workspaceRoot }),
+    runtime: createBrokerRuntime({ workspaceRoot: options.workspaceRoot }),
     logFile: options.stateDir ? getBrokerLogFile(options.stateDir) : null
   });
 }

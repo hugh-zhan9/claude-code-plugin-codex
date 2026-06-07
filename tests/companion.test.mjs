@@ -70,6 +70,7 @@ test("task foreground runs Claude and stores completed job", async () => {
   const output = await runCompanion(["task", "--", "fix bug"], {
     cwd: workspace,
     env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot },
+    disableBroker: true,
     sdk
   });
 
@@ -128,12 +129,14 @@ test("task resume-last ignores newer review sessions", async () => {
   await runCompanion(["task", "--", "initial task"], {
     cwd: workspace,
     env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot },
+    disableBroker: true,
     sdk: taskSdk
   });
 
   await runCompanion(["review"], {
     cwd: workspace,
     env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot },
+    disableBroker: true,
     sdk: createFakeClaudeSdk({ messages: reviewMessages }),
     reviewContext: {
       target: { kind: "working-tree", description: "working tree", baseRef: null },
@@ -147,10 +150,86 @@ test("task resume-last ignores newer review sessions", async () => {
   await runCompanion(["task", "--resume-last", "--", "continue task"], {
     cwd: workspace,
     env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot },
+    disableBroker: true,
     sdk: resumeSdk
   });
 
   assert.equal(resumeSdk.calls[0].options.resume, "task-session");
+});
+
+test("task uses broker client when provided", async () => {
+  const calls = [];
+  const output = await runCompanion(["task", "--", "fix bug"], {
+    cwd: makeTempDir("workspace-"),
+    env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: makeTempDir("state-") },
+    sdk: createThrowingSdk("direct SDK should not run"),
+    brokerClient: {
+      async run(request) {
+        calls.push(request);
+        return {
+          status: "completed",
+          claudeSessionId: "broker-session",
+          finalText: "broker result",
+          rawMessages: [],
+          fallbackUsed: false
+        };
+      }
+    }
+  });
+
+  assert.match(output, /broker result/);
+  assert.equal(calls[0].kind, "task");
+  assert.equal(calls[0].prompt, "fix bug");
+});
+
+test("broker busy is rendered as a clear user-facing error", async () => {
+  await assert.rejects(
+    () =>
+      runCompanion(["task", "--", "fix bug"], {
+        cwd: makeTempDir("workspace-"),
+        env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: makeTempDir("state-") },
+        sdk: createFakeClaudeSdk({ messages: taskMessages }),
+        brokerClient: {
+          async run() {
+            const error = new Error(
+              "A Claude Code job is already running in this workspace."
+            );
+            error.code = "BUSY";
+            throw error;
+          }
+        }
+      }),
+    /claude-code-status or claude-code-cancel/
+  );
+});
+
+test("broker interrupted task stores a cancelled job", async () => {
+  const stateRoot = makeTempDir("state-");
+  const workspace = makeTempDir("workspace-");
+
+  await assert.rejects(
+    () =>
+      runCompanion(["task", "--", "fix bug"], {
+        cwd: workspace,
+        env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot },
+        brokerClient: {
+          async run() {
+            return {
+              status: "interrupted",
+              interrupted: true,
+              finalText: "",
+              rawMessages: []
+            };
+          }
+        }
+      }),
+    /cancelled/
+  );
+
+  const stateDir = onlyWorkspaceStateDir(stateRoot);
+  const [summary] = loadWorkspaceState(stateDir).jobs;
+  const job = loadJob(summary.id, { stateDir });
+  assert.equal(job.status, "cancelled");
 });
 
 test("background task creates queued job and status/result can find it", async () => {
@@ -185,6 +264,7 @@ test("result for completed job includes stored final answer and resume command",
   await runCompanion(["task", "--", "fix bug"], {
     cwd: workspace,
     env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot },
+    disableBroker: true,
     sdk
   });
 
@@ -231,6 +311,7 @@ test("review foreground uses native review and read-only permission", async () =
   const output = await runCompanion(["review"], {
     cwd: workspace,
     env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: makeTempDir("state-") },
+    disableBroker: true,
     sdk,
     reviewContext: {
       target: { kind: "working-tree", description: "working tree", baseRef: null },
@@ -253,6 +334,7 @@ test("review falls back to prompt review when native review is unsupported", asy
   const output = await runCompanion(["review"], {
     cwd: makeTempDir("workspace-"),
     env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: makeTempDir("state-") },
+    disableBroker: true,
     sdk,
     reviewContext: {
       target: { kind: "working-tree", description: "working tree", baseRef: null },
@@ -284,6 +366,7 @@ test("adversarial-review renders structured output and passes focus", async () =
     {
       cwd: makeTempDir("workspace-"),
       env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: makeTempDir("state-") },
+      disableBroker: true,
       sdk,
       reviewContext: {
         target: { kind: "working-tree", description: "working tree", baseRef: null },
@@ -313,6 +396,7 @@ test("adversarial-review renders raw text and parse error when JSON is invalid",
   const output = await runCompanion(["adversarial-review"], {
     cwd: makeTempDir("workspace-"),
     env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: makeTempDir("state-") },
+    disableBroker: true,
     sdk,
     reviewContext: {
       target: { kind: "working-tree", description: "working tree", baseRef: null },
@@ -344,6 +428,15 @@ function createSwitchingSdk(messageSets) {
     query(params) {
       calls.push(params);
       return createAsyncMessageStream(messageSets[calls.length - 1] ?? []);
+    }
+  };
+}
+
+function createThrowingSdk(message) {
+  return {
+    calls: [],
+    query() {
+      throw new Error(message);
     }
   };
 }
