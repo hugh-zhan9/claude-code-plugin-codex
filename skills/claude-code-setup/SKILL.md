@@ -15,4 +15,4 @@ Run:
 node "${PLUGIN_ROOT}/scripts/cc-companion.mjs" setup
 ```
 
-Return the command output directly.
+Return the companion output directly.

@@ -17,4 +17,4 @@ node "${PLUGIN_ROOT}/scripts/cc-companion.mjs" review
 
 For a base ref, add `--base <ref>`.
 For model or effort, pass `--model <model>` or `--effort <level>`.
-Return the command output directly.
+Return the companion output directly.

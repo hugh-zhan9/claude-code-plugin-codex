@@ -17,4 +17,4 @@ node "${PLUGIN_ROOT}/scripts/cc-companion.mjs" task -- <user task text>
 
 For background execution, add `--background` before `--`.
 For model or effort, pass `--model <model>` or `--effort <level>` before `--`.
-Return the command output directly.
+Return the companion output directly.

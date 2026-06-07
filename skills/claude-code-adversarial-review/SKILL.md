@@ -16,4 +16,4 @@ node "${PLUGIN_ROOT}/scripts/cc-companion.mjs" adversarial-review -- <optional r
 ```
 
 For a base ref, add `--base <ref>` before `--`.
-Return the command output directly.
+Return the companion output directly.

@@ -16,4 +16,4 @@ node "${PLUGIN_ROOT}/scripts/cc-companion.mjs" status
 ```
 
 For a specific job, add the job id or unique prefix.
-Return the command output directly.
+Return the companion output directly.

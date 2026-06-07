@@ -4,3 +4,5 @@ Copyright 2026
 This project is designed to mirror selected local orchestration behavior from
 openai/codex-plugin-cc, which is licensed under the Apache License 2.0.
 Any reused or adapted source code must preserve the original license notices.
+
+Runtime integration is implemented through @anthropic-ai/claude-agent-sdk.

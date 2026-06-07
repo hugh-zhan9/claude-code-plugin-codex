@@ -34,9 +34,32 @@ test("all required skills exist and call the companion script", () => {
 
     assert.match(body, /^---\nname: /);
     assert.match(body, new RegExp(`name: ${name}`));
-    assert.match(body, /scripts\/cc-companion\.mjs/);
+    assert.match(body, /node "\$\{PLUGIN_ROOT\}\/scripts\/cc-companion\.mjs"/);
     assert.match(body, /Do not use MCP/i);
+    assert.match(body, /Return the companion output directly\./);
   }
+});
+
+test("task and review skills document permission boundaries", () => {
+  const task = readText("skills/claude-code-task/SKILL.md");
+  const review = readText("skills/claude-code-review/SKILL.md");
+  const adversarial = readText("skills/claude-code-adversarial-review/SKILL.md");
+
+  assert.match(task, /Default task permission is workspace-write/);
+  assert.match(task, /dangerous permission bypass/i);
+  assert.match(review, /review read-only/i);
+  assert.match(adversarial, /review read-only/i);
+});
+
+test("README documents direct commands, permissions, state, and no MCP", () => {
+  const body = readText("README.md");
+
+  assert.match(body, /node scripts\/cc-companion\.mjs setup/);
+  assert.match(body, /node scripts\/cc-companion\.mjs task --background --/);
+  assert.match(body, /workspace-write/);
+  assert.match(body, /read-only/);
+  assert.match(body, /CLAUDE_CODE_PLUGIN_CODEX_DATA/);
+  assert.match(body, /No MCP/i);
 });
 
 test("companion setup smoke command is available", () => {
