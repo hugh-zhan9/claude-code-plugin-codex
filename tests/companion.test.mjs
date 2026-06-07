@@ -153,6 +153,77 @@ test("task resume-last ignores newer review sessions", async () => {
   assert.equal(resumeSdk.calls[0].options.resume, "task-session");
 });
 
+test("background task creates queued job and status/result can find it", async () => {
+  const stateRoot = makeTempDir("state-");
+  const workspace = makeTempDir("workspace-");
+  const output = await runCompanion(["task", "--background", "--", "long task"], {
+    cwd: workspace,
+    env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot },
+    backgroundRunner: {
+      spawnWorker(job) {
+        return { pid: 12345, command: `worker ${job.id}` };
+      }
+    }
+  });
+
+  assert.match(output, /queued/i);
+  const id = output.match(/(task-[a-z0-9-]+)/)[1];
+
+  const status = await runCompanion(["status", id], {
+    cwd: workspace,
+    env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot }
+  });
+
+  assert.match(status, new RegExp(id));
+  assert.match(status, /queued/);
+});
+
+test("result for completed job includes stored final answer and resume command", async () => {
+  const stateRoot = makeTempDir("state-");
+  const workspace = makeTempDir("workspace-");
+  const sdk = createFakeClaudeSdk({ messages: taskMessages });
+  await runCompanion(["task", "--", "fix bug"], {
+    cwd: workspace,
+    env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot },
+    sdk
+  });
+
+  const result = await runCompanion(["result"], {
+    cwd: workspace,
+    env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot }
+  });
+
+  assert.match(result, /Task completed\./);
+  assert.match(result, /claude --resume task-session/);
+});
+
+test("cancel marks queued job cancelled without touching external Claude sessions", async () => {
+  const stateRoot = makeTempDir("state-");
+  const workspace = makeTempDir("workspace-");
+  const queued = await runCompanion(["task", "--background", "--", "long task"], {
+    cwd: workspace,
+    env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot },
+    backgroundRunner: {
+      spawnWorker(job) {
+        return { pid: 12345, command: `worker ${job.id}` };
+      }
+    }
+  });
+  const id = queued.match(/(task-[a-z0-9-]+)/)[1];
+
+  const cancel = await runCompanion(["cancel", id], {
+    cwd: workspace,
+    env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot },
+    brokerClient: {
+      async interrupt() {
+        return { interrupted: false, detail: "No active job." };
+      }
+    }
+  });
+
+  assert.match(cancel, /cancelled/i);
+});
+
 test("review foreground uses native review and read-only permission", async () => {
   const workspace = makeTempDir("workspace-");
   const sdk = createFakeClaudeSdk({ messages: reviewMessages });

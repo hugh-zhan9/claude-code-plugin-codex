@@ -16,21 +16,36 @@ import { buildReviewContext, resolveReviewTarget } from "./lib/git.mjs";
 import { buildFallbackReviewPrompt, buildTaskPrompt } from "./lib/prompts.mjs";
 import { commandExists } from "./lib/process.mjs";
 import {
+  assertCanResume,
+  cancelJob,
+  renderBackgroundQueued,
+  spawnTaskWorker
+} from "./lib/job-control.mjs";
+import {
   renderAdversarialReview,
   renderAdversarialReviewFailure,
+  renderCancel,
   renderJson,
   renderReview,
-  renderSetup
+  renderResult,
+  renderSetup,
+  renderStatus
 } from "./lib/render.mjs";
 import {
   createJob,
+  findJob,
   getDefaultStateRoot,
   getWorkspaceStateDir,
   listJobs,
   loadJob,
   saveJob
 } from "./lib/state.mjs";
-import { markCompleted, markFailed, markRunning } from "./lib/tracked-jobs.mjs";
+import {
+  markCancelled,
+  markCompleted,
+  markFailed,
+  markRunning
+} from "./lib/tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 export async function runCompanion(argv = process.argv.slice(2), deps = {}) {
@@ -56,6 +71,22 @@ export async function runCompanion(argv = process.argv.slice(2), deps = {}) {
 
   if (parsed.command === "adversarial-review") {
     return runAdversarial({ parsed, deps, workspaceRoot, stateDir });
+  }
+
+  if (parsed.command === "status") {
+    return runStatus({ parsed, workspaceRoot, stateDir });
+  }
+
+  if (parsed.command === "result") {
+    return runResult({ parsed, stateDir });
+  }
+
+  if (parsed.command === "cancel") {
+    return runCancel({ parsed, deps, stateDir });
+  }
+
+  if (parsed.command === "task-worker") {
+    return runTaskWorker({ parsed, deps, workspaceRoot, stateDir });
   }
 
   throw new Error(`Command not implemented yet: ${parsed.command}`);
@@ -119,10 +150,6 @@ async function runSetup(parsed, deps) {
 }
 
 async function runTask({ parsed, deps, workspaceRoot, stateDir }) {
-  if (parsed.options.background) {
-    throw new Error("Background tasks are not implemented yet.");
-  }
-
   if (parsed.options.fresh && parsed.options.resumeLast) {
     throw new Error("Cannot combine --fresh and --resume-last.");
   }
@@ -150,20 +177,34 @@ async function runTask({ parsed, deps, workspaceRoot, stateDir }) {
       resumeSessionId
     }
   });
+
+  if (parsed.options.background) {
+    saveJob(job, { stateDir });
+    const worker = spawnBackgroundWorker({ job, deps, workspaceRoot });
+    job.worker = worker;
+    saveLatestJobWithWorker({ job, stateDir });
+    return renderBackgroundQueued(job);
+  }
+
   saveJob(job, { stateDir });
+  return executeTaskJob({ job, deps, workspaceRoot, stateDir });
+}
+
+async function executeTaskJob({ job, deps, workspaceRoot, stateDir }) {
   markRunning(job, { phase: "running" });
   saveJob(job, { stateDir });
 
+  const requestOptions = job.request?.options ?? {};
   try {
     const result = await runClaudeTask({
       sdk: deps.sdk,
-      prompt,
+      prompt: job.request?.prompt ?? "",
       cwd: workspaceRoot,
-      model: parsed.options.model,
-      effort: parsed.options.effort,
-      permission: taskPermission(parsed.options),
-      resumeSessionId,
-      dangerouslyBypassPermissions: parsed.options.dangerouslyBypassPermissions
+      model: requestOptions.model,
+      effort: requestOptions.effort,
+      permission: taskPermission(requestOptions),
+      resumeSessionId: job.request?.resumeSessionId ?? null,
+      dangerouslyBypassPermissions: requestOptions.dangerouslyBypassPermissions
     });
 
     storeClaudeResult(job, result);
@@ -190,20 +231,104 @@ async function runTask({ parsed, deps, workspaceRoot, stateDir }) {
 }
 
 function findLastCompletedTaskSession({ stateDir }) {
-  const jobs = listJobs({ stateDir, all: true });
+  return assertCanResume({
+    jobs: listJobs({ stateDir, all: true }),
+    activeJob: findActiveJob({ stateDir })
+  });
+}
 
-  for (const summary of jobs) {
-    if (summary.kind !== "task" || summary.status !== "completed") {
-      continue;
-    }
-
-    const job = loadJob(summary.id, { stateDir });
-    if (job.claudeSessionId) {
-      return job.claudeSessionId;
-    }
+async function runTaskWorker({ parsed, deps, workspaceRoot, stateDir }) {
+  if (!parsed.jobRef) {
+    throw new Error("Task worker requires a job id.");
   }
 
-  throw new Error("No completed task job with a Claude session to resume.");
+  const job = loadJob(parsed.jobRef, { stateDir });
+
+  if (job.kind !== "task") {
+    throw new Error(`Job ${job.id} is not a task job.`);
+  }
+
+  if (job.status !== "queued") {
+    return `Job ${job.id} is already ${job.status}.\n`;
+  }
+
+  try {
+    return await executeTaskJob({ job, deps, workspaceRoot, stateDir });
+  } catch (error) {
+    const latest = loadJob(job.id, { stateDir });
+
+    if (isCancelledError(error)) {
+      markCancelled(latest, error.message);
+      saveJob(latest, { stateDir });
+      return `Job ${job.id} cancelled.\n`;
+    }
+
+    throw error;
+  }
+}
+
+function runStatus({ parsed, workspaceRoot, stateDir }) {
+  const jobs = parsed.jobRef
+    ? [findJob(parsed.jobRef, { stateDir })]
+    : listJobs({ stateDir, all: Boolean(parsed.options.all) });
+
+  return parsed.options.json
+    ? renderJson({ workspaceRoot, jobs })
+    : renderStatus({ workspaceRoot, jobs });
+}
+
+function runResult({ parsed, stateDir }) {
+  const job = findJob(parsed.jobRef ?? "", { stateDir });
+
+  if (job.status === "queued" || job.status === "running") {
+    return `Job ${job.id} is ${job.status}. Run \`claude-code-status ${job.id}\` later.\n`;
+  }
+
+  return renderResult(job);
+}
+
+async function runCancel({ parsed, deps, stateDir }) {
+  const job = parsed.jobRef
+    ? findJob(parsed.jobRef, { stateDir })
+    : findActiveJob({ stateDir }) ?? findJob("", { stateDir });
+  const result = await cancelJob({
+    job,
+    stateDir,
+    brokerClient: deps.brokerClient ?? null
+  });
+
+  return renderCancel(result);
+}
+
+function spawnBackgroundWorker({ job, deps, workspaceRoot }) {
+  if (deps.backgroundRunner?.spawnWorker) {
+    return deps.backgroundRunner.spawnWorker(job);
+  }
+
+  return spawnTaskWorker({
+    job,
+    companionPath: fileURLToPath(import.meta.url),
+    cwd: workspaceRoot,
+    env: { ...process.env, ...(deps.env ?? {}) }
+  });
+}
+
+function saveLatestJobWithWorker({ job, stateDir }) {
+  const latest = loadJob(job.id, { stateDir });
+  latest.worker = job.worker;
+  saveJob(latest, { stateDir });
+}
+
+function findActiveJob({ stateDir }) {
+  const active = listJobs({ stateDir, all: true }).find(
+    (job) => job.status === "running"
+  );
+
+  return active ? loadJob(active.id, { stateDir }) : null;
+}
+
+function isCancelledError(error) {
+  return /cancel/i.test(error?.message ?? "");
 }
 
 async function runReview({ parsed, deps, workspaceRoot, stateDir }) {
