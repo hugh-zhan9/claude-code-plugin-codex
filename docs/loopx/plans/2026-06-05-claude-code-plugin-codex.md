@@ -1386,7 +1386,7 @@ Create `/Users/zhangyukun/project/temp/claude-code-plugin-codex/scripts/lib/clau
 
 Required option mapping:
 
-- `permission: "read-only"` -> `allowedTools: ["Read", "Grep", "Glob", "LS", "Bash"]`, disallow edit/write tools when SDK supports `disallowedTools`.
+- `permission: "read-only"` -> `tools` and `allowedTools` limited to `["Read", "Grep", "Glob", "LS"]`; disallow `Bash`, `Edit`, `MultiEdit`, and `Write` when SDK supports `disallowedTools`.
 - `permission: "workspace-write"` -> include read tools and `Edit`, `MultiEdit`, `Write`, `Bash`.
 - `dangerouslyBypassPermissions: true` -> `permissionMode: "bypassPermissions"` and `allowDangerouslySkipPermissions: true`.
 - Normal workspace-write -> `permissionMode: "acceptEdits"`.

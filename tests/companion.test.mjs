@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { runCompanion } from "../scripts/cc-companion.mjs";
-import { loadJob, loadWorkspaceState } from "../scripts/lib/state.mjs";
+import { loadJob, loadWorkspaceState, saveJob } from "../scripts/lib/state.mjs";
 import {
   createFakeClaudeSdk,
   reviewMessages,
@@ -30,6 +30,29 @@ test("setup returns readiness report without installing or logging in", async ()
     report.checks.find((check) => check.name === "Claude Code CLI").ok,
     true
   );
+});
+
+test("setup checks real Claude auth readiness when diagnostics are not injected", async () => {
+  const output = await runCompanion(["setup", "--json"], {
+    cwd: makeTempDir(),
+    env: {},
+    commandExists(command) {
+      return command === "claude";
+    },
+    importClaudeSdk: async () => ({}),
+    checkClaudeReady: async () => false,
+    checkBroker: async () => false,
+    diagnostics: {
+      nodeVersion: "v20.0.0"
+    }
+  });
+
+  const report = JSON.parse(output);
+  const auth = report.checks.find((check) => check.name === "Claude Code auth");
+
+  assert.equal(auth.ok, false);
+  assert.equal(auth.detail, "not ready");
+  assert.deepEqual(report.nextSteps, ["Run `claude login`, then retry setup."]);
 });
 
 test("setup resolves and validates cwd like other commands", async () => {
@@ -257,6 +280,27 @@ test("background task creates queued job and status/result can find it", async (
   assert.match(status, /queued/);
 });
 
+test("background task rejects when another job is queued", async () => {
+  const stateRoot = makeTempDir("state-");
+  const workspace = makeTempDir("workspace-");
+  const deps = {
+    cwd: workspace,
+    env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot },
+    backgroundRunner: {
+      spawnWorker(job) {
+        return { pid: 12345, command: `worker ${job.id}` };
+      }
+    }
+  };
+
+  await runCompanion(["task", "--background", "--", "first task"], deps);
+
+  await assert.rejects(
+    () => runCompanion(["task", "--background", "--", "second task"], deps),
+    /already running/
+  );
+});
+
 test("result for completed job includes stored final answer and resume command", async () => {
   const stateRoot = makeTempDir("state-");
   const workspace = makeTempDir("workspace-");
@@ -304,6 +348,176 @@ test("cancel marks queued job cancelled without touching external Claude session
   assert.match(cancel, /cancelled/i);
 });
 
+test("cancel does not mark running job cancelled when broker interrupt reports no active job", async () => {
+  const stateRoot = makeTempDir("state-");
+  const workspace = makeTempDir("workspace-");
+  let release;
+  const running = runCompanion(["task", "--", "long task"], {
+    cwd: workspace,
+    env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot },
+    brokerClient: {
+      async run() {
+        await new Promise((resolve) => {
+          release = resolve;
+        });
+        return {
+          status: "completed",
+          claudeSessionId: "running-session",
+          finalText: "finished anyway",
+          rawMessages: []
+        };
+      }
+    }
+  });
+
+  await waitForStoredJobStatus(stateRoot, "running");
+
+  await assert.rejects(
+    () =>
+      runCompanion(["cancel"], {
+        cwd: workspace,
+        env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot },
+        brokerClient: {
+          async interrupt() {
+            return { interrupted: false, detail: "No active job." };
+          }
+        }
+      }),
+    /No active job/
+  );
+
+  const stateDir = onlyWorkspaceStateDir(stateRoot);
+  const [summary] = loadWorkspaceState(stateDir).jobs;
+  assert.equal(loadJob(summary.id, { stateDir }).status, "running");
+
+  release();
+  await running;
+});
+
+test("cancel terminates tracked worker when broker interrupt does not stop running job", async () => {
+  const stateRoot = makeTempDir("state-");
+  const workspace = makeTempDir("workspace-");
+  let release;
+  const running = runCompanion(["task", "--", "long task"], {
+    cwd: workspace,
+    env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot },
+    brokerClient: {
+      async run() {
+        await new Promise((resolve) => {
+          release = resolve;
+        });
+        return {
+          status: "completed",
+          claudeSessionId: "running-session",
+          finalText: "finished anyway",
+          rawMessages: []
+        };
+      }
+    }
+  });
+  const job = await waitForStoredJobStatus(stateRoot, "running");
+  const worker = spawn(process.execPath, ["-e", "setTimeout(() => {}, 10000)"], {
+    detached: true,
+    stdio: "ignore"
+  });
+  worker.unref();
+
+  try {
+    const stateDir = onlyWorkspaceStateDir(stateRoot);
+    const withWorker = loadJob(job.id, { stateDir });
+    withWorker.worker = { pid: worker.pid, command: "test worker" };
+    saveJob(withWorker, { stateDir });
+
+    const cancel = await runCompanion(["cancel", job.id], {
+      cwd: workspace,
+      env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot },
+      brokerClient: {
+        async interrupt() {
+          return { interrupted: false, detail: "No active job." };
+        }
+      }
+    });
+
+    assert.match(cancel, /worker terminated/);
+    assert.equal(loadJob(job.id, { stateDir }).status, "cancelled");
+  } finally {
+    try {
+      process.kill(worker.pid, "SIGKILL");
+    } catch {
+      // The cancellation path may already have terminated it.
+    }
+    release();
+    await running.catch(() => {});
+  }
+});
+
+test("task worker preserves externally cancelled jobs as terminal", async () => {
+  const stateRoot = makeTempDir("state-");
+  const workspace = makeTempDir("workspace-");
+  const queued = await runCompanion(["task", "--background", "--", "long task"], {
+    cwd: workspace,
+    env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot },
+    backgroundRunner: {
+      spawnWorker(job) {
+        return { pid: 12345, command: `worker ${job.id}` };
+      }
+    }
+  });
+  const id = queued.match(/(task-[a-z0-9-]+)/)[1];
+  await runCompanion(["cancel", id], {
+    cwd: workspace,
+    env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot }
+  });
+
+  const workerOutput = await runCompanion(["task-worker", id], {
+    cwd: workspace,
+    env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot },
+    disableBroker: true,
+    sdk: createFakeClaudeSdk({ messages: taskMessages })
+  });
+
+  assert.match(workerOutput, /already cancelled/);
+  const stateDir = onlyWorkspaceStateDir(stateRoot);
+  assert.equal(loadJob(id, { stateDir }).status, "cancelled");
+});
+
+test("status --wait waits for a running job to finish", async () => {
+  const stateRoot = makeTempDir("state-");
+  const workspace = makeTempDir("workspace-");
+  let release;
+  const running = runCompanion(["task", "--", "long task"], {
+    cwd: workspace,
+    env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot },
+    brokerClient: {
+      async run() {
+        await new Promise((resolve) => {
+          release = resolve;
+        });
+        return {
+          status: "completed",
+          claudeSessionId: "wait-session",
+          finalText: "waited result",
+          rawMessages: []
+        };
+      }
+    }
+  });
+
+  const job = await waitForStoredJobStatus(stateRoot, "running");
+  const statusPromise = runCompanion(["status", "--wait", job.id], {
+    cwd: workspace,
+    env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot },
+    statusWait: { intervalMs: 5, timeoutMs: 1000 }
+  });
+
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  release();
+  await running;
+
+  const status = await statusPromise;
+  assert.match(status, /completed/);
+});
+
 test("review foreground uses native review and read-only permission", async () => {
   const workspace = makeTempDir("workspace-");
   const sdk = createFakeClaudeSdk({ messages: reviewMessages });
@@ -322,6 +536,7 @@ test("review foreground uses native review and read-only permission", async () =
   });
 
   assert.match(output, /No issues found\./);
+  assert.equal(sdk.calls[0].options.allowedTools.includes("Bash"), false);
   assert.equal(sdk.calls[0].options.allowedTools.includes("Edit"), false);
 });
 
@@ -346,6 +561,7 @@ test("review falls back to prompt review when native review is unsupported", asy
 
   assert.match(output, /Fallback: used prompt-based review/);
   assert.match(sdk.calls[1].prompt, /read-only code review/);
+  assert.equal(sdk.calls[1].options.allowedTools.includes("Bash"), false);
   assert.equal(sdk.calls[1].options.allowedTools.includes("Edit"), false);
 });
 
@@ -418,6 +634,30 @@ function onlyWorkspaceStateDir(stateRoot) {
 
   assert.equal(entries.length, 1);
   return path.join(stateRoot, entries[0]);
+}
+
+async function waitForStoredJobStatus(stateRoot, status, { timeoutMs = 1000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    const entries = fs.existsSync(stateRoot)
+      ? fs.readdirSync(stateRoot).filter((entry) => entry.startsWith("workspace-"))
+      : [];
+
+    if (entries.length > 0) {
+      const stateDir = path.join(stateRoot, entries[0]);
+      for (const summary of loadWorkspaceState(stateDir).jobs) {
+        const job = loadJob(summary.id, { stateDir });
+        if (job.status === status) {
+          return job;
+        }
+      }
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+
+  throw new Error(`Timed out waiting for job status: ${status}`);
 }
 
 function createSwitchingSdk(messageSets) {

@@ -1,6 +1,6 @@
 import path from "node:path";
 import { spawnDetached } from "./process.mjs";
-import { saveJob } from "./state.mjs";
+import { loadJob, saveJob } from "./state.mjs";
 import { markCancelled } from "./tracked-jobs.mjs";
 
 export function chooseRecentRunnableSession(jobs = []) {
@@ -39,15 +39,17 @@ export function spawnTaskWorker({ job, companionPath, cwd, env }) {
 
 export async function cancelJob({ job, stateDir, brokerClient = null }) {
   if (job.status === "queued") {
-    markCancelled(job, "cancelled");
-    saveJob(job, { stateDir });
+    const latest = loadJob(job.id, { stateDir });
+    markCancelled(latest, "cancelled");
+    saveJob(latest, { stateDir });
     return { id: job.id, cancelled: true, detail: "cancelled" };
   }
 
   if (job.status === "running") {
-    const detail = await interruptRunningJob({ job, brokerClient });
-    markCancelled(job, detail);
-    saveJob(job, { stateDir });
+    const detail = await stopRunningJob({ job, brokerClient });
+    const latest = loadJob(job.id, { stateDir });
+    markCancelled(latest, detail);
+    saveJob(latest, { stateDir });
     return { id: job.id, cancelled: true, detail };
   }
 
@@ -74,13 +76,46 @@ export function assertCanResume({ jobs = [], activeJob = null } = {}) {
   return recent.claudeSessionId;
 }
 
-async function interruptRunningJob({ job, brokerClient }) {
-  if (!brokerClient || typeof brokerClient.interrupt !== "function") {
-    return "cancelled";
+async function stopRunningJob({ job, brokerClient }) {
+  if (brokerClient && typeof brokerClient.interrupt === "function") {
+    const result = await brokerClient.interrupt({ jobId: job.id });
+
+    if (result?.interrupted) {
+      return result.detail ?? "interrupted";
+    }
+
+    if (!tryKillWorker(job.worker)) {
+      throw new Error(result?.detail ?? "Claude Code job did not acknowledge cancellation.");
+    }
+
+    return result?.detail ? `${result.detail}; worker terminated` : "worker terminated";
   }
 
-  const result = await brokerClient.interrupt({ jobId: job.id });
-  return result?.detail ?? (result?.interrupted ? "interrupted" : "cancelled");
+  if (tryKillWorker(job.worker)) {
+    return "worker terminated";
+  }
+
+  throw new Error("Cannot cancel running job without broker interrupt or worker pid.");
+}
+
+function tryKillWorker(worker) {
+  const pid = worker?.pid;
+
+  if (!Number.isInteger(pid) || pid <= 0) {
+    return false;
+  }
+
+  try {
+    process.kill(-pid, "SIGTERM");
+    return true;
+  } catch {
+    try {
+      process.kill(pid, "SIGTERM");
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }
 
 function quote(value) {

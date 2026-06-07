@@ -37,10 +37,13 @@ test("buildClaudeOptions maps read-only permissions without write tools", () => 
     permission: "read-only"
   });
 
+  assert.deepEqual(options.tools, ["Read", "Grep", "Glob", "LS"]);
   assert.ok(options.allowedTools.includes("Read"));
   assert.ok(options.allowedTools.includes("Grep"));
+  assert.equal(options.allowedTools.includes("Bash"), false);
   assert.equal(options.allowedTools.includes("Edit"), false);
   assert.equal(options.allowedTools.includes("Write"), false);
+  assert.ok(options.disallowedTools.includes("Bash"));
   assert.ok(options.disallowedTools.includes("Edit"));
   assert.ok(options.disallowedTools.includes("Write"));
 });
@@ -103,6 +106,7 @@ test("runFallbackReview marks fallback and uses read-only permissions", async ()
   assert.equal(result.finalText, "No issues found.");
   assert.equal(result.claudeSessionId, "review-session");
   assert.equal(sdk.calls[0].prompt, "review this diff");
+  assert.equal(sdk.calls[0].options.allowedTools.includes("Bash"), false);
   assert.equal(sdk.calls[0].options.allowedTools.includes("Edit"), false);
 });
 

@@ -1,8 +1,9 @@
 import { buildAdversarialReviewPrompt } from "./prompts.mjs";
 
-const READ_TOOLS = ["Read", "Grep", "Glob", "LS", "Bash"];
+const READ_TOOLS = ["Read", "Grep", "Glob", "LS"];
+const SHELL_TOOLS = ["Bash"];
 const WRITE_TOOLS = ["Edit", "MultiEdit", "Write"];
-const WRITE_DISALLOWED_TOOLS = ["Edit", "MultiEdit", "Write"];
+const READ_ONLY_DISALLOWED_TOOLS = ["Bash", "Edit", "MultiEdit", "Write"];
 
 export async function importClaudeSdk() {
   return import("@anthropic-ai/claude-agent-sdk");
@@ -20,14 +21,15 @@ export function buildClaudeOptions({
   const options = {
     allowedTools:
       permission === "workspace-write"
-        ? [...READ_TOOLS, ...WRITE_TOOLS]
+        ? [...READ_TOOLS, ...SHELL_TOOLS, ...WRITE_TOOLS]
         : [...READ_TOOLS],
     permissionMode: permission === "workspace-write" ? "acceptEdits" : "default",
     allowDangerouslySkipPermissions: false
   };
 
   if (permission === "read-only") {
-    options.disallowedTools = [...WRITE_DISALLOWED_TOOLS];
+    options.tools = [...READ_TOOLS];
+    options.disallowedTools = [...READ_ONLY_DISALLOWED_TOOLS];
   }
 
   if (dangerouslyBypassPermissions) {

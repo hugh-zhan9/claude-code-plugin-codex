@@ -2,6 +2,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parseCompanionArgs } from "./lib/args.mjs";
 import {
@@ -80,7 +81,7 @@ export async function runCompanion(argv = process.argv.slice(2), deps = {}) {
   }
 
   if (parsed.command === "status") {
-    return runStatus({ parsed, workspaceRoot, stateDir });
+    return runStatus({ parsed, deps, workspaceRoot, stateDir });
   }
 
   if (parsed.command === "result") {
@@ -145,6 +146,13 @@ async function runSetup({ parsed, deps, stateDir }) {
       ok: Boolean(claudeReady),
       detail: claudeReady ? "ready" : "not ready"
     });
+  } else {
+    const claudeReady = await checkClaudeReady({ deps });
+    checks.push({
+      name: "Claude Code auth",
+      ok: Boolean(claudeReady),
+      detail: claudeReady ? "ready" : "not ready"
+    });
   }
 
   const report = {
@@ -186,6 +194,7 @@ async function runTask({ parsed, deps, workspaceRoot, stateDir }) {
   });
 
   if (parsed.options.background) {
+    assertNoActiveOrQueuedJob({ stateDir, ignoreJobId: job.id });
     saveJob(job, { stateDir });
     const worker = spawnBackgroundWorker({ job, deps, workspaceRoot });
     job.worker = worker;
@@ -231,6 +240,10 @@ async function executeTaskJob({ job, deps, workspaceRoot, stateDir }) {
     });
 
     storeClaudeResult(job, result);
+
+    if (isJobTerminallyCancelled(job, { stateDir })) {
+      throw new Error(`Job ${job.id} cancelled.`);
+    }
 
     if (result.status === "completed") {
       const rendered = result.finalText ? `${result.finalText}\n` : "";
@@ -297,14 +310,41 @@ async function runTaskWorker({ parsed, deps, workspaceRoot, stateDir }) {
   }
 }
 
-function runStatus({ parsed, workspaceRoot, stateDir }) {
-  const jobs = parsed.jobRef
-    ? [findJob(parsed.jobRef, { stateDir })]
-    : listJobs({ stateDir, all: Boolean(parsed.options.all) });
+async function runStatus({ parsed, deps, workspaceRoot, stateDir }) {
+  const jobs = parsed.options.wait
+    ? await waitForStatusJobs({ parsed, deps, stateDir })
+    : statusJobs({ parsed, stateDir });
 
   return parsed.options.json
     ? renderJson({ workspaceRoot, jobs })
     : renderStatus({ workspaceRoot, jobs });
+}
+
+function statusJobs({ parsed, stateDir }) {
+  const jobs = parsed.jobRef
+    ? [findJob(parsed.jobRef, { stateDir })]
+    : listJobs({ stateDir, all: Boolean(parsed.options.all) });
+
+  return jobs;
+}
+
+async function waitForStatusJobs({ parsed, deps, stateDir }) {
+  const waitOptions = deps.statusWait ?? {};
+  const intervalMs = Number(waitOptions.intervalMs ?? 1000);
+  const timeoutMs = Number(waitOptions.timeoutMs ?? 30 * 60 * 1000);
+  const deadline = Date.now() + timeoutMs;
+  let jobs = statusJobs({ parsed, stateDir });
+
+  while (jobs.some((job) => job.status === "queued" || job.status === "running")) {
+    if (Date.now() >= deadline) {
+      throw new Error("Timed out waiting for Claude Code job to finish.");
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    jobs = statusJobs({ parsed, stateDir });
+  }
+
+  return jobs;
 }
 
 function runResult({ parsed, stateDir }) {
@@ -359,6 +399,28 @@ function findActiveJob({ stateDir }) {
   );
 
   return active ? loadJob(active.id, { stateDir }) : null;
+}
+
+function assertNoActiveOrQueuedJob({ stateDir, ignoreJobId = null }) {
+  const active = listJobs({ stateDir, all: true }).find(
+    (job) =>
+      job.id !== ignoreJobId &&
+      (job.status === "queued" || job.status === "running")
+  );
+
+  if (active) {
+    throw new Error(
+      "A Claude Code job is already running in this workspace. Run claude-code-status or claude-code-cancel."
+    );
+  }
+}
+
+function isJobTerminallyCancelled(job, { stateDir }) {
+  try {
+    return loadJob(job.id, { stateDir }).status === "cancelled";
+  } catch {
+    return false;
+  }
 }
 
 function isCancelledError(error) {
@@ -645,6 +707,38 @@ async function checkSdkImport({ diagnostics, deps }) {
       ok: false,
       detail: error?.message ?? String(error)
     };
+  }
+}
+
+async function checkClaudeReady({ deps }) {
+  if (typeof deps.checkClaudeReady === "function") {
+    return Boolean(await deps.checkClaudeReady());
+  }
+
+  const runAuthStatus =
+    deps.runClaudeAuthStatus ??
+    (() =>
+      spawnSync("claude", ["auth", "status"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"]
+      }));
+  const result = runAuthStatus();
+
+  if (result?.status !== 0) {
+    return false;
+  }
+
+  const stdout = String(result.stdout ?? "").trim();
+
+  if (!stdout) {
+    return true;
+  }
+
+  try {
+    const parsed = JSON.parse(stdout);
+    return parsed.loggedIn !== false;
+  } catch {
+    return !/not\s+(logged|authenticated)|logged\s+out/i.test(stdout);
   }
 }
 

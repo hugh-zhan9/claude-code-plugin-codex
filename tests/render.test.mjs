@@ -88,6 +88,33 @@ test("renderResult falls back to result.finalText", () => {
   assert.equal(output, "Fixed the auth redirect.\n");
 });
 
+test("renderResult shows failed job error details and log path", () => {
+  const output = renderResult({
+    id: "task-001",
+    status: "failed",
+    phase: "failed",
+    error: { message: "Claude runtime crashed" },
+    logFile: "/tmp/claude-code/jobs/task-001.log"
+  });
+
+  assert.match(output, /# Claude Code Job Result/);
+  assert.match(output, /Status: failed/);
+  assert.match(output, /Error: Claude runtime crashed/);
+  assert.match(output, /Log: \/tmp\/claude-code\/jobs\/task-001\.log/);
+});
+
+test("renderResult shows cancelled job details", () => {
+  const output = renderResult({
+    id: "task-001",
+    status: "cancelled",
+    phase: "cancelled",
+    error: { message: "interrupted" }
+  });
+
+  assert.match(output, /Status: cancelled/);
+  assert.match(output, /Error: interrupted/);
+});
+
 test("renderReview renders raw review text and fallback marker", () => {
   const output = renderReview({
     text: "Review finding text.",

@@ -53,6 +53,30 @@ export function renderStatus({ workspaceRoot, jobs = [] } = {}) {
 }
 
 export function renderResult(job = {}) {
+  if (job.status === "failed" || job.status === "cancelled") {
+    const lines = [
+      "# Claude Code Job Result",
+      "",
+      `Job: ${job.id ?? "unknown"}`,
+      `Status: ${job.status}`,
+      `Phase: ${job.phase ?? ""}`
+    ];
+
+    if (job.error?.message) {
+      lines.push(`Error: ${job.error.message}`);
+    }
+
+    if (job.logFile) {
+      lines.push(`Log: ${job.logFile}`);
+    }
+
+    if (job.result?.finalText) {
+      lines.push("", "## Final Output", job.result.finalText);
+    }
+
+    return finish(lines);
+  }
+
   const lines = [finalText(job)];
 
   if (job.claudeSessionId) {
