@@ -3,6 +3,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   getPackageRoot,
   installCodexPlugin
@@ -95,6 +96,16 @@ function assertNoArgs(args) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+function isCliEntrypoint() {
+  if (!process.argv[1]) {
+    return false;
+  }
+  return (
+    fs.realpathSync(fileURLToPath(import.meta.url)) ===
+    fs.realpathSync(path.resolve(process.argv[1]))
+  );
+}
+
+if (isCliEntrypoint()) {
   await main();
 }

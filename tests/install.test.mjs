@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -11,7 +12,13 @@ import {
   installCodexPlugin,
   writeLocalMarketplace
 } from "../scripts/lib/install.mjs";
-import { assertFile, makeTempDir, readJson, readText } from "./helpers.mjs";
+import {
+  assertFile,
+  makeTempDir,
+  readJson,
+  readText,
+  repoRoot
+} from "./helpers.mjs";
 
 function makePackageRoot() {
   const root = makeTempDir("claude-code-codex-package-");
@@ -43,6 +50,27 @@ test("package exposes an npm distribution command and publishes plugin files", (
   assert.match(pkg.files.join("\n"), /^skills\/$/m);
   assert.match(pkg.files.join("\n"), /^scripts\/$/m);
 });
+
+test("npm bin entrypoint runs through a symlink", () => {
+  const binDir = makeTempDir("claude-code-codex-bin-");
+  const binPath = path.join(binDir, "claude-code-codex");
+  fs.symlinkSync(path.join(repoRoot, "scripts", "cli.mjs"), binPath);
+
+  const result = spawnSync(process.execPath, [binPath, "--version"], {
+    encoding: "utf8"
+  });
+
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout.trim(), readJson("package.json").version);
+});
+
+test("plugin manifest version follows package version", () => {
+  const pkg = readJson("package.json");
+  const manifest = readJson(".codex-plugin/plugin.json");
+
+  assert.equal(manifest.version, pkg.version);
+});
+
 
 test("buildMarketplaceManifest declares a local Codex marketplace entry", () => {
   const manifest = buildMarketplaceManifest();

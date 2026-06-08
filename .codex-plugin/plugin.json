@@ -1,6 +1,6 @@
 {
   "name": "claude-code",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Delegate Codex tasks and reviews to local Claude Code.",
   "author": {
     "name": "OpenAI",

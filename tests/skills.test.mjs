@@ -14,10 +14,11 @@ const skillNames = [
 ];
 
 test("plugin manifest declares the claude-code plugin and skills folder", () => {
+  const pkg = readJson("package.json");
   const manifest = readJson(".codex-plugin/plugin.json");
 
   assert.equal(manifest.name, "claude-code");
-  assert.equal(manifest.version, "0.1.0");
+  assert.equal(manifest.version, pkg.version);
   assert.equal(manifest.description.includes("Claude Code"), true);
   assert.equal(manifest.skills, "./skills/");
   assert.equal(manifest.author.name, "OpenAI");

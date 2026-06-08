@@ -1,6 +1,6 @@
 {
   "name": "claude-code-codex",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Codex plugin that delegates tasks and reviews to Claude Code.",
   "type": "module",
   "bin": {
