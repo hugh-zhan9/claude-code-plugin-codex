@@ -161,6 +161,53 @@ test("saveWorkspaceState removes pruned job files and logs only", () => {
   assert.equal(fs.readFileSync(unrelatedFile, "utf8"), "do not delete");
 });
 
+test("saveWorkspaceState still saves pruned state when deleting a pruned file fails", () => {
+  const stateDir = makeTempDir("task-state-");
+  const jobsDir = path.join(stateDir, "jobs");
+  fs.mkdirSync(jobsDir, { recursive: true });
+
+  const originalRmSync = fs.rmSync;
+  const failingId = "task-04";
+  const jobs = Array.from({ length: 55 }, (_, index) => {
+    const id = `task-${String(index).padStart(2, "0")}`;
+    const logFile = path.join(jobsDir, `${id}.log`);
+
+    fs.writeFileSync(path.join(jobsDir, `${id}.json`), "{}", "utf8");
+    fs.writeFileSync(logFile, "log", "utf8");
+
+    return {
+      id,
+      kind: "task",
+      status: "completed",
+      phase: "completed",
+      createdAt: "2026-06-06T07:00:00.000Z",
+      updatedAt: `2026-06-06T07:${String(index).padStart(2, "0")}:00.000Z`,
+      claudeSessionId: null,
+      logFile
+    };
+  });
+
+  fs.rmSync = (filePath, options) => {
+    if (filePath === path.join(jobsDir, `${failingId}.json`)) {
+      throw new Error("permission denied");
+    }
+
+    return originalRmSync(filePath, options);
+  };
+
+  try {
+    saveWorkspaceState(stateDir, { version: 1, jobs });
+  } finally {
+    fs.rmSync = originalRmSync;
+  }
+
+  const savedJobs = listJobs({ stateDir, all: true });
+  assert.equal(savedJobs.length, 50);
+  assert.equal(savedJobs[0].id, "task-54");
+  assert.equal(savedJobs.at(-1).id, "task-05");
+  assert.equal(fs.existsSync(path.join(jobsDir, `${failingId}.json`)), true);
+});
+
 test("saveWorkspaceState ignores unsafe pruned job ids when deleting files", () => {
   const stateDir = makeTempDir("task-state-");
   const jobsDir = path.join(stateDir, "jobs");

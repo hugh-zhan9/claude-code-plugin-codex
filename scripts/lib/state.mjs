@@ -182,18 +182,16 @@ function deletePrunedJobFiles(stateDir, prunedJobs, keptIds) {
       continue;
     }
 
-    removeFileIfPresent(prunedJobFilePath(stateDir, job.id, ".json"));
-    removeFileIfPresent(prunedJobFilePath(stateDir, job.id, ".log"));
+    removePrunedJobFileBestEffort(prunedJobFilePath(stateDir, job.id, ".json"));
+    removePrunedJobFileBestEffort(prunedJobFilePath(stateDir, job.id, ".log"));
   }
 }
 
-function removeFileIfPresent(filePath) {
+function removePrunedJobFileBestEffort(filePath) {
   try {
     fs.rmSync(filePath, { force: true });
-  } catch (error) {
-    throw new Error(`Failed to remove pruned job file ${filePath}: ${error.message}`, {
-      cause: error
-    });
+  } catch {
+    // Pruning stale job artifacts should not block saving the current index.
   }
 }
 
