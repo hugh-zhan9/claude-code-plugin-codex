@@ -6,6 +6,7 @@ import test from "node:test";
 import { runCompanion } from "../scripts/cc-companion.mjs";
 import { loadJob, loadWorkspaceState, saveJob } from "../scripts/lib/state.mjs";
 import {
+  createAsyncMessageStream,
   createFakeClaudeSdk,
   reviewMessages,
   taskMessages
@@ -679,14 +680,4 @@ function createThrowingSdk(message) {
       throw new Error(message);
     }
   };
-}
-
-async function* createAsyncMessageStream(messages) {
-  for (const message of messages) {
-    if (message instanceof Error) {
-      throw message;
-    }
-
-    yield message;
-  }
 }

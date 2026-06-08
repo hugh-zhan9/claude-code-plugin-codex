@@ -40,7 +40,7 @@ export function createFakeClaudeSdk({ messages = taskMessages } = {}) {
   };
 }
 
-async function* createAsyncMessageStream(messages) {
+export async function* createAsyncMessageStream(messages) {
   for (const message of messages) {
     if (message instanceof Error) {
       throw message;
