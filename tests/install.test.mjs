@@ -40,7 +40,7 @@ function makePackageRoot() {
 test("package exposes an npm distribution command and publishes plugin files", () => {
   const pkg = readJson("package.json");
 
-  assert.equal(pkg.name, "claude-code-codex");
+  assert.equal(pkg.name, "@ai-content-space/claude-code-codex");
   assert.equal(pkg.private, undefined);
   assert.deepEqual(pkg.bin, {
     "claude-code-codex": "scripts/cli.mjs"
@@ -213,4 +213,11 @@ test("GitHub Actions publish workflow packages and publishes to npm", () => {
   assert.match(workflow, /npm view "\$PACKAGE_NAME@\$PACKAGE_VERSION" version/);
   assert.match(workflow, /run: npm publish --access public/);
   assert.match(workflow, /NODE_AUTH_TOKEN: \$\{\{ secrets\.NPM_TOKEN \}\}/);
+});
+
+test("README documents scoped npm install command", () => {
+  const readme = readText("README.md");
+
+  assert.match(readme, /npm install -g @ai-content-space\/claude-code-codex/);
+  assert.match(readme, /claude-code-codex install/);
 });

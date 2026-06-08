@@ -9,7 +9,7 @@ Requires Node.js 20 or newer, the `codex` CLI, and the `claude` CLI on `PATH`.
 Install from npm:
 
 ```bash
-npm install -g claude-code-codex
+npm install -g @ai-content-space/claude-code-codex
 claude-code-codex install
 ```
 
