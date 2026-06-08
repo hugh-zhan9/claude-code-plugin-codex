@@ -1,9 +1,25 @@
 {
-  "name": "claude-code-plugin-codex",
+  "name": "claude-code-codex",
   "version": "0.1.0",
-  "private": true,
   "description": "Codex plugin that delegates tasks and reviews to Claude Code.",
   "type": "module",
+  "bin": {
+    "claude-code-codex": "scripts/cli.mjs"
+  },
+  "files": [
+    ".codex-plugin/",
+    "skills/",
+    "scripts/",
+    "prompts/",
+    "schemas/",
+    "README.md",
+    "LICENSE",
+    "NOTICE",
+    "package.json"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "test": "node --test",
     "test:smoke": "node scripts/cc-companion.mjs setup"

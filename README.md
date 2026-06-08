@@ -4,10 +4,27 @@ Local Codex plugin that delegates selected tasks and reviews to Claude Code.
 
 ## Install
 
-Requires Node.js 20 or newer and the `claude` CLI on `PATH`.
+Requires Node.js 20 or newer, the `codex` CLI, and the `claude` CLI on `PATH`.
+
+Install from npm:
+
+```bash
+npm install -g claude-code-codex
+claude-code-codex install
+```
+
+`claude-code-codex install` creates a local Codex marketplace at
+`~/.codex/local-marketplaces/claude-code-codex`, points that marketplace at the
+installed npm package, runs `codex plugin marketplace add`, runs
+`codex plugin add claude-code@claude-code-codex`, and then runs the plugin setup
+check.
+
+For local development in this repository:
 
 ```bash
 npm install
+npm test
+node scripts/cli.mjs install --skip-setup
 ```
 
 ## Usage
@@ -25,6 +42,7 @@ From Codex, explicitly ask for one of these skills:
 Direct companion commands:
 
 ```bash
+claude-code-codex setup
 node scripts/cc-companion.mjs setup
 node scripts/cc-companion.mjs task -- "Fix the failing auth test"
 node scripts/cc-companion.mjs task --background -- "Run a long investigation"
@@ -44,6 +62,7 @@ npm install @anthropic-ai/claude-agent-sdk
 ```
 
 `setup` checks availability and readiness. It does not install packages or log in. No MCP tools are used.
+The npm install command installs package dependencies, including Claude Agent SDK.
 
 ## Permissions
 
@@ -61,5 +80,4 @@ The workspace index keeps the 50 most recent jobs. Pruned job files and logs are
 
 - Skill-only Codex plugin.
 - No MCP tools.
-- No marketplace release flow.
 - No automatic dependency install or Claude login.
