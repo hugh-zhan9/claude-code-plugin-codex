@@ -5,6 +5,7 @@ import net from "node:net";
 import { fileURLToPath } from "node:url";
 import { appendLog, ensureDir } from "./lib/fs.mjs";
 import { getBrokerLogFile } from "./lib/broker-endpoint.mjs";
+import { taskPermission } from "./lib/permissions.mjs";
 import {
   importClaudeSdk,
   isUnsupportedNativeReviewError,
@@ -243,14 +244,6 @@ async function runBrokerReview({ sdk, workspaceRoot, params, abortController }) 
       abortController
     });
   }
-}
-
-function taskPermission(options) {
-  if (options.readOnly) {
-    return "read-only";
-  }
-
-  return "workspace-write";
 }
 
 async function handleBrokerLine({ line, socket, state, server, logFile }) {

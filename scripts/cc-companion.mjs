@@ -21,6 +21,7 @@ import {
 } from "./lib/claude.mjs";
 import { buildReviewContext, resolveReviewTarget } from "./lib/git.mjs";
 import { buildFallbackReviewPrompt, buildTaskPrompt } from "./lib/prompts.mjs";
+import { taskPermission } from "./lib/permissions.mjs";
 import { commandExists } from "./lib/process.mjs";
 import {
   assertCanResume,
@@ -797,14 +798,6 @@ function setupNextSteps(checks) {
 function isSupportedNodeVersion(version) {
   const major = Number(String(version).replace(/^v/, "").split(".")[0]);
   return Number.isInteger(major) && major >= 20;
-}
-
-function taskPermission(options) {
-  if (options.readOnly) {
-    return "read-only";
-  }
-
-  return "workspace-write";
 }
 
 function unsupportedNativeReviewResultError(error) {
