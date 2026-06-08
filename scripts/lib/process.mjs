@@ -3,12 +3,6 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 
 export function commandExists(command) {
-  const result = spawnSync(command, ["--version"], { stdio: "ignore" });
-
-  if ((result.status === 0 || result.signal !== null) && isExecutable(command)) {
-    return true;
-  }
-
   return findOnPath(command) !== null;
 }
 
@@ -31,7 +25,7 @@ export function spawnDetached(command, args, options = {}) {
   return child;
 }
 
-function findOnPath(command, env = process.env, platform = process.platform) {
+export function findOnPath(command, env = process.env, platform = process.platform) {
   if (command.includes(path.sep)) {
     return isExecutable(command) ? command : null;
   }

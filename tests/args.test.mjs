@@ -132,6 +132,25 @@ test("commandExists detects node and rejects a generated missing command", () =>
   assert.equal(commandExists(missingCommand), false);
 });
 
+test("commandExists does not execute commands found on PATH", () => {
+  if (os.platform() === "win32") {
+    return;
+  }
+
+  const binDir = makeTempDir("command-path-");
+  const markerPath = path.join(binDir, "executed-marker");
+  const commandPath = path.join(binDir, "side-effect-command");
+
+  fs.writeFileSync(
+    commandPath,
+    `#!/bin/sh\nprintf executed > "${markerPath}"\nexit 0\n`,
+    { mode: 0o755 }
+  );
+
+  assert.equal(commandExists(commandPath), true);
+  assert.equal(fs.existsSync(markerPath), false);
+});
+
 test("commandExists rejects directories on POSIX", () => {
   if (os.platform() === "win32") {
     return;
