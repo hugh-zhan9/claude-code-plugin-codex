@@ -6,11 +6,9 @@ import { fileURLToPath } from "node:url";
 import { parseCompanionArgs } from "./lib/args.mjs";
 import { ensureBroker, requestBroker } from "./lib/broker-lifecycle.mjs";
 import {
-  isUnsupportedNativeReviewError,
   runAdversarialReview,
   runClaudeTask,
-  runFallbackReview,
-  runNativeReview
+  runPromptReview
 } from "./lib/claude.mjs";
 import { buildReviewContext, resolveReviewTarget } from "./lib/git.mjs";
 import { buildFallbackReviewPrompt, buildTaskPrompt } from "./lib/prompts.mjs";
@@ -366,8 +364,20 @@ function isCancelledError(error) {
 }
 
 async function runReview({ parsed, deps, workspaceRoot, stateDir }) {
-  const context = deps.reviewContext ?? buildContext({ parsed, workspaceRoot });
-  const job = createReviewJob({ kind: "review", parsed, workspaceRoot, stateDir, context });
+  const context = ensureReviewContextWorkspaceRoot(
+    deps.reviewContext ?? buildContext({ parsed, workspaceRoot }),
+    workspaceRoot
+  );
+  const prompt = buildFallbackReviewPrompt(context);
+  const reviewRuntime = reviewRuntimeOptions(context);
+  const job = createReviewJob({
+    kind: "review",
+    parsed,
+    workspaceRoot,
+    stateDir,
+    context,
+    prompt
+  });
 
   try {
     let result;
@@ -379,18 +389,21 @@ async function runReview({ parsed, deps, workspaceRoot, stateDir }) {
       workspaceRoot,
       stateDir,
       directRun: () =>
-        runDirectReview({
-          deps,
-          workspaceRoot,
-          context,
-          options: parsed.options
+        runPromptReview({
+          sdk: deps.sdk,
+          prompt,
+          cwd: workspaceRoot,
+          model: parsed.options.model,
+          effort: parsed.options.effort,
+          ...reviewRuntime
         }),
       request: {
         kind: "review",
         jobId: job.id,
+        prompt,
         context,
-        fallbackPrompt: buildFallbackReviewPrompt(context),
-        options: parsed.options
+        options: parsed.options,
+        ...reviewRuntime
       }
     });
 
@@ -416,11 +429,15 @@ async function runReview({ parsed, deps, workspaceRoot, stateDir }) {
 }
 
 async function runAdversarial({ parsed, deps, workspaceRoot, stateDir }) {
-  const context = deps.reviewContext ?? buildContext({ parsed, workspaceRoot });
+  const context = ensureReviewContextWorkspaceRoot(
+    deps.reviewContext ?? buildContext({ parsed, workspaceRoot }),
+    workspaceRoot
+  );
   const prompt = {
     ...context,
     focus: parsed.prompt ?? ""
   };
+  const reviewRuntime = reviewRuntimeOptions(context);
   const job = createReviewJob({
     kind: "adversarial-review",
     parsed,
@@ -443,13 +460,15 @@ async function runAdversarial({ parsed, deps, workspaceRoot, stateDir }) {
           prompt,
           cwd: workspaceRoot,
           model: parsed.options.model,
-          effort: parsed.options.effort
+          effort: parsed.options.effort,
+          ...reviewRuntime
         }),
       request: {
         kind: "adversarial-review",
         jobId: job.id,
         prompt,
-        options: parsed.options
+        options: parsed.options,
+        ...reviewRuntime
       }
     });
 
@@ -506,34 +525,21 @@ function buildContext({ parsed, workspaceRoot }) {
   return buildReviewContext({ workspaceRoot, target });
 }
 
-async function runDirectReview({ deps, workspaceRoot, context, options }) {
-  try {
-    const result = await runNativeReview({
-      sdk: deps.sdk,
-      cwd: workspaceRoot,
-      context,
-      model: options.model,
-      effort: options.effort
-    });
+function ensureReviewContextWorkspaceRoot(context, workspaceRoot) {
+  return {
+    ...context,
+    workspaceRoot: context.workspaceRoot ?? workspaceRoot
+  };
+}
 
-    if (isUnsupportedNativeReviewError(result.error)) {
-      throw unsupportedNativeReviewResultError(result.error);
-    }
+function reviewRuntimeOptions(context) {
+  const readTools = !context.inline;
 
-    return result;
-  } catch (error) {
-    if (!isUnsupportedNativeReviewError(error)) {
-      throw error;
-    }
-
-    return runFallbackReview({
-      sdk: deps.sdk,
-      prompt: buildFallbackReviewPrompt(context),
-      cwd: workspaceRoot,
-      model: options.model,
-      effort: options.effort
-    });
-  }
+  return {
+    isolated: true,
+    readTools,
+    maxTurns: readTools ? null : 1
+  };
 }
 
 async function runClaudeExecution({
@@ -621,16 +627,6 @@ function assertCompletedClaudeResult(result, label) {
   const error = new Error(result.error?.message ?? `${label} ${result.status}`);
   error.result = result;
   throw error;
-}
-
-function unsupportedNativeReviewResultError(error) {
-  const message =
-    error?.message ??
-    error?.errors?.join("\n") ??
-    "Native Claude review is unsupported.";
-  const wrapped = new Error(message);
-  wrapped.code = "UNSUPPORTED_NATIVE_REVIEW";
-  return wrapped;
 }
 
 if (isDirectCliInvocation()) {

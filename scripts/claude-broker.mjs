@@ -8,11 +8,9 @@ import { getBrokerLogFile } from "./lib/broker-endpoint.mjs";
 import { taskPermission } from "./lib/permissions.mjs";
 import {
   importClaudeSdk,
-  isUnsupportedNativeReviewError,
   runAdversarialReview,
   runClaudeTask,
-  runFallbackReview,
-  runNativeReview
+  runPromptReview
 } from "./lib/claude.mjs";
 
 const BUSY_MESSAGE = "A Claude Code job is already running in this workspace.";
@@ -185,7 +183,10 @@ async function runBrokerExecution({
       permission: taskPermission(options),
       resumeSessionId: params.resumeSessionId ?? null,
       dangerouslyBypassPermissions: options.dangerouslyBypassPermissions,
-      abortController
+      abortController,
+      readTools: params.readTools ?? true,
+      isolated: params.isolated ?? false,
+      maxTurns: params.maxTurns ?? null
     });
   }
 
@@ -205,7 +206,10 @@ async function runBrokerExecution({
       cwd: workspaceRoot,
       model: options.model,
       effort: options.effort,
-      abortController
+      abortController,
+      readTools: params.readTools ?? true,
+      isolated: params.isolated ?? true,
+      maxTurns: params.maxTurns ?? null
     });
   }
 
@@ -215,35 +219,18 @@ async function runBrokerExecution({
 async function runBrokerReview({ sdk, workspaceRoot, params, abortController }) {
   const options = params.options ?? {};
 
-  try {
-    const result = await runNativeReview({
-      sdk,
-      cwd: workspaceRoot,
-      context: params.context,
-      model: options.model,
-      effort: options.effort,
-      abortController
-    });
-
-    if (isUnsupportedNativeReviewError(result.error)) {
-      throw result.error;
-    }
-
-    return result;
-  } catch (error) {
-    if (!isUnsupportedNativeReviewError(error)) {
-      throw error;
-    }
-
-    return runFallbackReview({
-      sdk,
-      prompt: params.fallbackPrompt ?? "",
-      cwd: workspaceRoot,
-      model: options.model,
-      effort: options.effort,
-      abortController
-    });
-  }
+  return runPromptReview({
+    sdk,
+    // fallbackPrompt is accepted for compatibility with already queued requests.
+    prompt: params.prompt ?? params.fallbackPrompt ?? "",
+    cwd: workspaceRoot,
+    model: options.model,
+    effort: options.effort,
+    abortController,
+    readTools: params.readTools ?? true,
+    isolated: params.isolated ?? true,
+    maxTurns: params.maxTurns ?? null
+  });
 }
 
 async function handleBrokerLine({ line, socket, state, server, logFile }) {

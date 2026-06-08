@@ -10,13 +10,16 @@ import {
 } from "../scripts/claude-broker.mjs";
 import { getBrokerEndpoint } from "../scripts/lib/broker-endpoint.mjs";
 import {
+  BROKER_PROTOCOL_VERSION,
   cleanupStaleBroker,
   ensureBroker,
+  isBrokerReachable,
   loadBrokerSession,
-  requestBroker
+  requestBroker,
+  saveBrokerSession
 } from "../scripts/lib/broker-lifecycle.mjs";
 import { ensureDir } from "../scripts/lib/fs.mjs";
-import { createFakeClaudeSdk, taskMessages } from "./fake-claude-sdk.mjs";
+import { createFakeClaudeSdk, reviewMessages, taskMessages } from "./fake-claude-sdk.mjs";
 import { makeTempDir } from "./helpers.mjs";
 
 test("broker run request returns runtime result", async () => {
@@ -112,6 +115,39 @@ test("broker runtime dispatches task requests to Claude SDK", async () => {
   assert.equal(sdk.calls[0].options.effort, "high");
   assert.equal(sdk.calls[0].options.resume, "previous-session");
   assert.equal(sdk.calls[0].options.permissionMode, "acceptEdits");
+  assert.equal("settingSources" in sdk.calls[0].options, false);
+  assert.equal("plugins" in sdk.calls[0].options, false);
+  assert.equal("skills" in sdk.calls[0].options, false);
+});
+
+test("broker runtime dispatches review requests with scoped prompt", async () => {
+  const sdk = createFakeClaudeSdk({ messages: reviewMessages });
+  const runtime = createBrokerRuntime({
+    sdk,
+    workspaceRoot: "/repo"
+  });
+
+  const result = await runtime.run({
+    params: {
+      kind: "review",
+      prompt: "Review only /repo.\nDiff:\ndiff --git",
+      readTools: false,
+      isolated: true,
+      maxTurns: 1,
+      options: { model: "sonnet" }
+    }
+  });
+
+  assert.equal(result.finalText, "No issues found.");
+  assert.equal(sdk.calls[0].prompt, "Review only /repo.\nDiff:\ndiff --git");
+  assert.doesNotMatch(sdk.calls[0].prompt, /^\/review\b/);
+  assert.equal(sdk.calls[0].options.cwd, "/repo");
+  assert.deepEqual(sdk.calls[0].options.allowedTools, []);
+  assert.deepEqual(sdk.calls[0].options.tools, []);
+  assert.deepEqual(sdk.calls[0].options.settingSources, ["user"]);
+  assert.deepEqual(sdk.calls[0].options.plugins, []);
+  assert.deepEqual(sdk.calls[0].options.skills, []);
+  assert.equal(sdk.calls[0].options.maxTurns, 1);
 });
 
 test("broker interrupt aborts the active run controller", async () => {
@@ -196,6 +232,54 @@ test("ensureBroker rejects when spawned broker never becomes reachable", async (
     /Broker did not become reachable/
   );
   assert.equal(loadBrokerSession(stateDir), null);
+});
+
+test("ensureBroker shuts down incompatible reachable brokers", async () => {
+  const stateDir = makeTempDir("broker-incompatible-");
+  const workspaceRoot = makeTempDir("workspace-");
+  const endpoint = getBrokerEndpoint({ stateDir });
+  const logFile = path.join(stateDir, "broker.log");
+  const { server } = await startBrokerServer({
+    endpoint,
+    runtime: {
+      async run() {
+        return { status: "completed", finalText: "old broker" };
+      },
+      async interrupt() {
+        return { interrupted: true };
+      }
+    },
+    logFile
+  });
+
+  saveBrokerSession(stateDir, {
+    protocolVersion: BROKER_PROTOCOL_VERSION - 1,
+    endpoint,
+    pid: null,
+    workspaceRoot,
+    stateDir,
+    logFile,
+    startedAt: new Date().toISOString()
+  });
+
+  try {
+    await assert.rejects(
+      () =>
+        ensureBroker({
+          stateDir,
+          workspaceRoot,
+          nodePath: path.join(stateDir, "missing-node"),
+          readyTimeoutMs: 100
+        }),
+      /Broker did not become reachable/
+    );
+
+    assert.equal(await isBrokerReachable(endpoint), false);
+    assert.equal(loadBrokerSession(stateDir), null);
+  } finally {
+    await closeServer(server).catch(() => {});
+    fs.rmSync(endpoint, { force: true });
+  }
 });
 
 test("cleanupStaleBroker does not remove regular files with socket-like names", async () => {

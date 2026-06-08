@@ -9,7 +9,7 @@ import {
   getDefaultBranch,
   getDiff,
   git,
-  hasWorkingTreeChanges,
+  hasReviewableWorkingTreeChanges,
   isGitRepository,
   resolveReviewTarget
 } from "../scripts/lib/git.mjs";
@@ -113,7 +113,7 @@ test("resolveReviewTarget auto chooses working tree when repository is dirty", (
   writeFile(workspaceRoot, "README.md", "initial\nmodified\n");
   writeFile(workspaceRoot, "notes/untracked.txt", "new file\n");
 
-  assert.equal(hasWorkingTreeChanges(workspaceRoot), true);
+  assert.equal(hasReviewableWorkingTreeChanges(workspaceRoot), true);
   const target = resolveReviewTarget({ workspaceRoot });
 
   assert.equal(target.kind, "working-tree");
@@ -286,6 +286,52 @@ test("working tree review context includes staged, unstaged, and untracked files
   assert.match(context.diff, /diff --git a\/untracked\.txt b\/untracked\.txt/);
 });
 
+test("working tree review context excludes local OMC state files", () => {
+  const workspaceRoot = createGitRepo();
+  const target = resolveReviewTarget({ workspaceRoot, scope: "working-tree" });
+
+  writeFile(workspaceRoot, ".omc/project-memory.json", "{}\n");
+  writeFile(workspaceRoot, ".omc/sessions/session.json", "{}\n");
+  writeFile(workspaceRoot, ".omc/staged.json", "{}\n");
+  writeFile(workspaceRoot, "src/change.js", "export const changed = true;\n");
+  runGit(workspaceRoot, ["add", ".omc/staged.json"]);
+
+  const files = getChangedFiles({ workspaceRoot, target });
+  const context = buildReviewContext({ workspaceRoot, target });
+
+  assert.deepEqual(files, ["src/change.js"]);
+  assert.deepEqual(context.files, ["src/change.js"]);
+  assert.doesNotMatch(context.diff, /\.omc/);
+  assert.match(context.diff, /diff --git a\/src\/change\.js b\/src\/change\.js/);
+});
+
+test("branch review context excludes committed OMC state files", () => {
+  const workspaceRoot = createGitRepo();
+  const defaultBranch = runGit(workspaceRoot, ["branch", "--show-current"]);
+
+  runGit(workspaceRoot, ["checkout", "-b", "feature/omc-noise"]);
+  writeFile(workspaceRoot, ".omc/project-memory.json", "{}\n");
+  writeFile(workspaceRoot, "src/change.js", "export const changed = true;\n");
+  runGit(workspaceRoot, ["add", ".omc/project-memory.json", "src/change.js"]);
+  runGit(workspaceRoot, ["commit", "-m", "feature with omc noise"]);
+
+  const target = resolveReviewTarget({ workspaceRoot, base: defaultBranch });
+  const context = buildReviewContext({ workspaceRoot, target });
+
+  assert.deepEqual(getChangedFiles({ workspaceRoot, target }), ["src/change.js"]);
+  assert.deepEqual(context.files, ["src/change.js"]);
+  assert.doesNotMatch(context.diff, /\.omc/);
+  assert.match(context.diff, /diff --git a\/src\/change\.js b\/src\/change\.js/);
+});
+
+test("auto review target ignores OMC-only working tree state", () => {
+  const workspaceRoot = createGitRepo();
+
+  writeFile(workspaceRoot, ".omc/project-memory.json", "{}\n");
+
+  assert.equal(hasReviewableWorkingTreeChanges(workspaceRoot), false);
+});
+
 test("buildReviewContext summarizes diff when inline threshold is exceeded", () => {
   const { workspaceRoot, defaultBranch } = createBranchChangeRepo();
   const target = resolveReviewTarget({ workspaceRoot, base: defaultBranch });
@@ -340,6 +386,8 @@ test("prompt builders include read-only constraints, diff, JSON, and focus", () 
   const fallback = buildFallbackReviewPrompt(context);
   assert.match(fallback, /read-only/i);
   assert.match(fallback, /Do not modify files/i);
+  assert.match(fallback, /Only review files under the repository root/i);
+  assert.match(fallback, /without calling tools/i);
   assert.match(fallback, /main\.\.\.HEAD/);
   assert.match(fallback, /README\.md/);
   assert.match(fallback, /\+changed/);
@@ -348,6 +396,8 @@ test("prompt builders include read-only constraints, diff, JSON, and focus", () 
     focus: "security regressions"
   });
   assert.match(adversarial, /read-only/i);
+  assert.match(adversarial, /Only review files under the repository root/i);
+  assert.match(adversarial, /without calling tools/i);
   assert.match(adversarial, /JSON/i);
   assert.match(adversarial, /next_steps/);
   assert.match(adversarial, /security regressions/);

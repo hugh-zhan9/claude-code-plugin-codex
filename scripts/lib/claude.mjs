@@ -19,20 +19,39 @@ export function buildClaudeOptions({
   abortController = null,
   dangerouslyBypassPermissions = false,
   env = process.env,
-  platform = process.platform
+  platform = process.platform,
+  readTools = true,
+  isolated = false,
+  maxTurns = null
 } = {}) {
+  const readOnlyTools = readTools ? [...READ_TOOLS] : [];
+  const workspaceWriteTools = [
+    ...(readTools ? READ_TOOLS : []),
+    ...SHELL_TOOLS,
+    ...WRITE_TOOLS
+  ];
   const options = {
     allowedTools:
       permission === "workspace-write"
-        ? [...READ_TOOLS, ...SHELL_TOOLS, ...WRITE_TOOLS]
-        : [...READ_TOOLS],
+        ? workspaceWriteTools
+        : readOnlyTools,
     permissionMode: permission === "workspace-write" ? "acceptEdits" : "default",
     allowDangerouslySkipPermissions: false
   };
 
   if (permission === "read-only") {
-    options.tools = [...READ_TOOLS];
-    options.disallowedTools = [...READ_ONLY_DISALLOWED_TOOLS];
+    options.tools = readOnlyTools;
+    options.disallowedTools = readTools
+      ? [...READ_ONLY_DISALLOWED_TOOLS]
+      : [...READ_ONLY_DISALLOWED_TOOLS, ...READ_TOOLS];
+  } else if (permission === "workspace-write" && !readTools) {
+    options.disallowedTools = [...READ_TOOLS];
+  }
+
+  if (isolated) {
+    options.settingSources = ["user"];
+    options.plugins = [];
+    options.skills = [];
   }
 
   const claudeExecutable = resolveClaudeExecutable({ env, platform });
@@ -63,6 +82,10 @@ export function buildClaudeOptions({
 
   if (abortController) {
     options.abortController = abortController;
+  }
+
+  if (Number.isInteger(maxTurns) && maxTurns > 0) {
+    options.maxTurns = maxTurns;
   }
 
   return options;
@@ -119,7 +142,10 @@ export async function runClaudeTask({
   resumeSessionId = null,
   dangerouslyBypassPermissions = false,
   onProgress = null,
-  abortController = null
+  abortController = null,
+  readTools = true,
+  isolated = false,
+  maxTurns = null
 }) {
   const claudeSdk = sdk ?? (await importClaudeSdk());
   const queryResult = claudeSdk.query({
@@ -131,7 +157,10 @@ export async function runClaudeTask({
       permission,
       resumeSessionId,
       abortController,
-      dangerouslyBypassPermissions
+      dangerouslyBypassPermissions,
+      readTools,
+      isolated,
+      maxTurns
     })
   });
   let messages;
@@ -151,17 +180,18 @@ export async function runClaudeTask({
   return normalizeClaudeResult(messages);
 }
 
-export async function runNativeReview({
+export async function runPromptReview({
   sdk,
+  prompt,
   cwd,
-  context,
   model,
   effort,
   onProgress = null,
-  abortController = null
+  abortController = null,
+  readTools = true,
+  isolated = true,
+  maxTurns = null
 }) {
-  const prompt = buildNativeReviewPrompt(context);
-
   return runClaudeTask({
     sdk,
     prompt,
@@ -170,31 +200,11 @@ export async function runNativeReview({
     effort,
     permission: "read-only",
     onProgress,
-    abortController
+    abortController,
+    readTools,
+    isolated,
+    maxTurns
   });
-}
-
-export async function runFallbackReview({
-  sdk,
-  prompt,
-  cwd,
-  model,
-  effort,
-  onProgress = null,
-  abortController = null
-}) {
-  const result = await runClaudeTask({
-    sdk,
-    prompt,
-    cwd,
-    model,
-    effort,
-    permission: "read-only",
-    onProgress,
-    abortController
-  });
-
-  return { ...result, fallbackUsed: true };
 }
 
 export async function runAdversarialReview({
@@ -204,7 +214,10 @@ export async function runAdversarialReview({
   model,
   effort,
   onProgress = null,
-  abortController = null
+  abortController = null,
+  readTools = true,
+  isolated = true,
+  maxTurns = null
 }) {
   const result = await runClaudeTask({
     sdk,
@@ -214,7 +227,10 @@ export async function runAdversarialReview({
     effort,
     permission: "read-only",
     onProgress,
-    abortController
+    abortController,
+    readTools,
+    isolated,
+    maxTurns
   });
 
   try {
@@ -232,23 +248,6 @@ export async function runAdversarialReview({
       parseError: error instanceof Error ? error.message : String(error)
     };
   }
-}
-
-export function isUnsupportedNativeReviewError(error) {
-  if (!error) {
-    return false;
-  }
-
-  if (error.code === "UNSUPPORTED_NATIVE_REVIEW") {
-    return true;
-  }
-
-  const text = errorText(error);
-
-  return (
-    /\/review/i.test(text) &&
-    /(unknown|unsupported|not supported|not available|unrecognized)/i.test(text)
-  );
 }
 
 async function closeClaudeQuery(queryResult) {
@@ -280,21 +279,6 @@ function attachCollectedMessages(error, messages) {
   }
 
   return normalizedError;
-}
-
-function errorText(error) {
-  if (!error || typeof error !== "object") {
-    return String(error ?? "");
-  }
-
-  const parts = [
-    error.message,
-    error.code,
-    error.subtype,
-    ...(Array.isArray(error.errors) ? error.errors : [])
-  ];
-
-  return parts.filter(Boolean).join("\n");
 }
 
 function isAbortError(error, abortController) {
@@ -356,16 +340,6 @@ export function extractJsonObject(text) {
   }
 
   throw new Error("Unterminated JSON object");
-}
-
-function buildNativeReviewPrompt(context) {
-  const target = context?.target?.description ?? context?.target?.label ?? "";
-
-  if (!target) {
-    return "/review";
-  }
-
-  return `/review ${target}`;
 }
 
 function buildAdversarialReviewPromptFromInput(prompt) {

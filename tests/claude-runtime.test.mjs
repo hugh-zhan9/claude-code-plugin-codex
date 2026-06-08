@@ -7,13 +7,10 @@ import {
   extractJsonObject,
   resolveClaudeExecutable,
   runAdversarialReview,
-  runClaudeTask,
-  runFallbackReview,
-  runNativeReview
+  runClaudeTask
 } from "../scripts/lib/claude.mjs";
 import {
   createFakeClaudeSdk,
-  reviewMessages,
   taskMessages
 } from "./fake-claude-sdk.mjs";
 import { makeTempDir } from "./helpers.mjs";
@@ -35,6 +32,19 @@ test("buildClaudeOptions maps workspace-write permissions", () => {
   assert.ok(options.allowedTools.includes("Edit"));
 });
 
+test("buildClaudeOptions honors disabled read tools in workspace-write mode", () => {
+  const options = buildClaudeOptions({
+    permission: "workspace-write",
+    readTools: false
+  });
+
+  assert.equal(options.allowedTools.includes("Read"), false);
+  assert.equal(options.allowedTools.includes("Grep"), false);
+  assert.ok(options.allowedTools.includes("Bash"));
+  assert.ok(options.allowedTools.includes("Edit"));
+  assert.ok(options.disallowedTools.includes("Read"));
+});
+
 test("buildClaudeOptions maps read-only permissions without write tools", () => {
   const options = buildClaudeOptions({
     cwd: "/repo",
@@ -50,6 +60,27 @@ test("buildClaudeOptions maps read-only permissions without write tools", () => 
   assert.ok(options.disallowedTools.includes("Bash"));
   assert.ok(options.disallowedTools.includes("Edit"));
   assert.ok(options.disallowedTools.includes("Write"));
+});
+
+test("buildClaudeOptions can isolate review sessions and disable read tools", () => {
+  const options = buildClaudeOptions({
+    cwd: "/repo",
+    permission: "read-only",
+    readTools: false,
+    isolated: true,
+    maxTurns: 1
+  });
+
+  assert.deepEqual(options.allowedTools, []);
+  assert.deepEqual(options.tools, []);
+  assert.ok(options.disallowedTools.includes("Read"));
+  assert.ok(options.disallowedTools.includes("Grep"));
+  assert.ok(options.disallowedTools.includes("Glob"));
+  assert.ok(options.disallowedTools.includes("LS"));
+  assert.deepEqual(options.settingSources, ["user"]);
+  assert.deepEqual(options.plugins, []);
+  assert.deepEqual(options.skills, []);
+  assert.equal(options.maxTurns, 1);
 });
 
 test("buildClaudeOptions omits optional fields when absent", () => {
@@ -112,39 +143,6 @@ test("runClaudeTask maps resume session to SDK resume option", async () => {
 
   assert.equal(sdk.calls[0].options.resume, "session-123");
   assert.equal("resumeSessionId" in sdk.calls[0].options, false);
-});
-
-test("runFallbackReview marks fallback and uses read-only permissions", async () => {
-  const sdk = createFakeClaudeSdk({ messages: reviewMessages });
-
-  const result = await runFallbackReview({
-    sdk,
-    prompt: "review this diff",
-    cwd: "/repo",
-    model: "sonnet"
-  });
-
-  assert.equal(result.fallbackUsed, true);
-  assert.equal(result.finalText, "No issues found.");
-  assert.equal(result.claudeSessionId, "review-session");
-  assert.equal(sdk.calls[0].prompt, "review this diff");
-  assert.equal(sdk.calls[0].options.allowedTools.includes("Bash"), false);
-  assert.equal(sdk.calls[0].options.allowedTools.includes("Edit"), false);
-});
-
-test("runNativeReview starts prompt with slash review and does not mark fallback", async () => {
-  const sdk = createFakeClaudeSdk({ messages: reviewMessages });
-
-  const result = await runNativeReview({
-    sdk,
-    cwd: "/repo",
-    context: { target: { description: "changes since main" } },
-    model: "sonnet"
-  });
-
-  assert.equal(sdk.calls[0].prompt.startsWith("/review"), true);
-  assert.match(sdk.calls[0].prompt, /changes since main/);
-  assert.equal(result.fallbackUsed, false);
 });
 
 test("extractJsonObject parses first balanced JSON object", () => {

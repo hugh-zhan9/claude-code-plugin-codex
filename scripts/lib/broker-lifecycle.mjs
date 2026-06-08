@@ -12,6 +12,8 @@ import {
 
 const BROKER_READY_TIMEOUT_MS = 3000;
 export const DEFAULT_BROKER_REQUEST_TIMEOUT_MS = 30 * 60 * 1000;
+// v4 carries scoped review prompts plus isolated/readTools/maxTurns runtime options.
+export const BROKER_PROTOCOL_VERSION = 4;
 
 export function loadBrokerSession(stateDir) {
   return readJsonFile(getBrokerSessionFile(stateDir));
@@ -128,7 +130,15 @@ export async function ensureBroker({
     existingSession?.endpoint &&
     (await isBrokerReachable(existingSession.endpoint))
   ) {
-    return existingSession;
+    if (isCompatibleBrokerSession(existingSession, { workspaceRoot, stateDir })) {
+      return existingSession;
+    }
+
+    await shutdownBroker(existingSession.endpoint);
+    if (!(await waitUntilBrokerUnreachable(existingSession.endpoint, readyTimeoutMs))) {
+      throw new Error("Existing broker is incompatible and could not be stopped.");
+    }
+    removeFileIfPresent(getBrokerSessionFile(stateDir));
   }
 
   const endpoint = getBrokerEndpoint({ stateDir });
@@ -137,16 +147,10 @@ export async function ensureBroker({
   await cleanupStaleBroker(stateDir);
 
   if (await isBrokerReachable(endpoint)) {
-    const session = {
-      endpoint,
-      pid: null,
-      workspaceRoot,
-      stateDir,
-      logFile,
-      startedAt: new Date().toISOString()
-    };
-    saveBrokerSession(stateDir, session);
-    return session;
+    await shutdownBroker(endpoint);
+    if (!(await waitUntilBrokerUnreachable(endpoint, readyTimeoutMs))) {
+      throw new Error("Existing broker is incompatible and could not be stopped.");
+    }
   }
 
   const child = spawnDetached(nodePath, [
@@ -159,6 +163,7 @@ export async function ensureBroker({
     stateDir
   ]);
   const session = {
+    protocolVersion: BROKER_PROTOCOL_VERSION,
     endpoint,
     pid: child.pid ?? null,
     workspaceRoot,
@@ -178,6 +183,40 @@ export async function ensureBroker({
   }
 
   throw new Error(`Broker did not become reachable within ${readyTimeoutMs}ms.`);
+}
+
+function isCompatibleBrokerSession(session, { workspaceRoot, stateDir }) {
+  return (
+    session?.protocolVersion === BROKER_PROTOCOL_VERSION &&
+    session.workspaceRoot === workspaceRoot &&
+    session.stateDir === stateDir
+  );
+}
+
+async function shutdownBroker(endpoint) {
+  try {
+    await requestBroker(
+      endpoint,
+      { id: `shutdown-${Date.now()}`, method: "shutdown", params: {} },
+      500
+    );
+  } catch {
+    // Incompatible or stale brokers are best-effort to stop before respawn.
+  }
+}
+
+async function waitUntilBrokerUnreachable(endpoint, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (!(await isBrokerReachable(endpoint))) {
+      return true;
+    }
+
+    await sleep(50);
+  }
+
+  return !(await isBrokerReachable(endpoint));
 }
 
 export async function cleanupStaleBroker(stateDir) {

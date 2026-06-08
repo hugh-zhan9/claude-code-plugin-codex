@@ -519,13 +519,14 @@ test("status --wait waits for a running job to finish", async () => {
   assert.match(status, /completed/);
 });
 
-test("review foreground uses native review and read-only permission", async () => {
+test("review foreground uses a scoped prompt and read-only permission", async () => {
   const workspace = makeTempDir("workspace-");
+  const stateRoot = makeTempDir("state-");
   const sdk = createFakeClaudeSdk({ messages: reviewMessages });
 
   const output = await runCompanion(["review"], {
     cwd: workspace,
-    env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: makeTempDir("state-") },
+    env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: stateRoot },
     disableBroker: true,
     sdk,
     reviewContext: {
@@ -537,21 +538,44 @@ test("review foreground uses native review and read-only permission", async () =
   });
 
   assert.match(output, /No issues found\./);
-  assert.equal(sdk.calls[0].options.allowedTools.includes("Bash"), false);
-  assert.equal(sdk.calls[0].options.allowedTools.includes("Edit"), false);
+  assert.doesNotMatch(sdk.calls[0].prompt, /^\/review\b/);
+  assert.match(sdk.calls[0].prompt, new RegExp(escapeRegExp(workspace)));
+  assert.match(sdk.calls[0].prompt, /Only review files under the repository root/i);
+  assert.match(sdk.calls[0].prompt, /file\.txt/);
+  assert.match(sdk.calls[0].prompt, /diff --git/);
+  assert.deepEqual(sdk.calls[0].options.allowedTools, []);
+  assert.deepEqual(sdk.calls[0].options.tools, []);
+  assert.ok(sdk.calls[0].options.disallowedTools.includes("Read"));
+  assert.ok(sdk.calls[0].options.disallowedTools.includes("Bash"));
+  assert.ok(sdk.calls[0].options.disallowedTools.includes("Edit"));
+  assert.deepEqual(sdk.calls[0].options.settingSources, ["user"]);
+  assert.deepEqual(sdk.calls[0].options.plugins, []);
+  assert.deepEqual(sdk.calls[0].options.skills, []);
+  assert.equal(sdk.calls[0].options.maxTurns, 1);
+
+  const stateDir = onlyWorkspaceStateDir(stateRoot);
+  const [summary] = loadWorkspaceState(stateDir).jobs;
+  const job = loadJob(summary.id, { stateDir });
+  assert.equal(job.request.prompt, sdk.calls[0].prompt);
 });
 
-test("review falls back to prompt review when native review is unsupported", async () => {
-  const sdk = createSwitchingSdk([
-    [new Error("/review is not supported")],
-    reviewMessages
-  ]);
+test("review broker requests use the scoped prompt", async () => {
+  const calls = [];
 
   const output = await runCompanion(["review"], {
     cwd: makeTempDir("workspace-"),
     env: { CLAUDE_CODE_PLUGIN_CODEX_DATA: makeTempDir("state-") },
-    disableBroker: true,
-    sdk,
+    brokerClient: {
+      async run(request) {
+        calls.push(request);
+        return {
+          status: "completed",
+          claudeSessionId: "broker-review-session",
+          finalText: "broker review done",
+          rawMessages: []
+        };
+      }
+    },
     reviewContext: {
       target: { kind: "working-tree", description: "working tree", baseRef: null },
       files: ["file.txt"],
@@ -560,10 +584,14 @@ test("review falls back to prompt review when native review is unsupported", asy
     }
   });
 
-  assert.match(output, /Fallback: used prompt-based review/);
-  assert.match(sdk.calls[1].prompt, /read-only code review/);
-  assert.equal(sdk.calls[1].options.allowedTools.includes("Bash"), false);
-  assert.equal(sdk.calls[1].options.allowedTools.includes("Edit"), false);
+  assert.match(output, /broker review done/);
+  assert.equal(calls[0].kind, "review");
+  assert.doesNotMatch(calls[0].prompt, /^\/review\b/);
+  assert.match(calls[0].prompt, /Only review files under the repository root/i);
+  assert.equal(calls[0].readTools, false);
+  assert.equal(calls[0].isolated, true);
+  assert.equal(calls[0].maxTurns, 1);
+  assert.equal("fallbackPrompt" in calls[0], false);
 });
 
 test("adversarial-review renders structured output and passes focus", async () => {
@@ -671,6 +699,10 @@ function createSwitchingSdk(messageSets) {
       return createAsyncMessageStream(messageSets[calls.length - 1] ?? []);
     }
   };
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function createThrowingSdk(message) {

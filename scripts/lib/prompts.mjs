@@ -33,6 +33,7 @@ export function buildTaskPrompt(prompt) {
 
 function templateValuesFromContext(context) {
   return {
+    workspace_root: context.workspaceRoot ?? "",
     target:
       context.target?.description ?? context.target?.label ?? context.target?.kind ?? "",
     files: context.files ?? [],

@@ -7,7 +7,7 @@ description: Ask local Claude Code to review the current Git working tree or a b
 
 Use when the user explicitly asks Codex to delegate code review to Claude Code.
 
-Do not use MCP. Keep review read-only. Prefer native Claude Code review through the runtime when available; otherwise the companion uses a prompt-based fallback and marks the fallback.
+Do not use MCP. Keep review read-only. The companion sends Claude Code a scoped review prompt with the current repository root, changed files, and diff; it does not invoke Claude Code's native `/review` slash command. When the diff is inline, the companion disables read tools for the delegated review.
 
 Run:
 

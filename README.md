@@ -63,6 +63,12 @@ npm install @anthropic-ai/claude-agent-sdk
 
 `setup` checks availability and readiness. It does not install packages or log in. No MCP tools are used.
 The npm install command installs package dependencies, including Claude Agent SDK.
+Review commands use a scoped prompt containing the repository root, changed files,
+and diff instead of Claude Code's native `/review` slash command. This keeps the
+review bounded to the current repository. Review runs with project/local settings
+disabled while retaining user settings for Claude Code authentication; when the
+diff is inline, read tools are disabled so Claude cannot inspect sibling
+repositories.
 
 ## Permissions
 

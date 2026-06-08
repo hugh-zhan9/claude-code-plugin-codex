@@ -3,6 +3,10 @@ import path from "node:path";
 
 const DEFAULT_GIT_MAX_BUFFER = 16 * 1024 * 1024;
 const DIFF_BUFFER_MARGIN_BYTES = 64 * 1024;
+// Git pathspecs keep generated state out of diffs; regex filtering is a fallback
+// for untracked/path forms that may not pass through pathspec handling.
+const DEFAULT_REVIEW_EXCLUDES = [/^\.omc(?:\/|$)/];
+const DEFAULT_REVIEW_EXCLUDE_PATHSPECS = [":(exclude).omc/**"];
 
 export function git(workspaceRoot, args, options = {}) {
   const allowExitCodes = new Set(options.allowExitCodes ?? []);
@@ -61,10 +65,10 @@ export function getDefaultBranch(workspaceRoot) {
   return null;
 }
 
-export function hasWorkingTreeChanges(workspaceRoot) {
+export function hasReviewableWorkingTreeChanges(workspaceRoot) {
   assertGitRepository(workspaceRoot);
 
-  return git(workspaceRoot, ["status", "--porcelain"]).length > 0;
+  return getWorkingTreeChangedFiles(workspaceRoot).length > 0;
 }
 
 export function resolveReviewTarget({
@@ -97,7 +101,7 @@ export function resolveReviewTarget({
     throw new Error(`Unknown review scope: ${scope}`);
   }
 
-  if (hasWorkingTreeChanges(workspaceRoot)) {
+  if (hasReviewableWorkingTreeChanges(workspaceRoot)) {
     return workingTreeTarget();
   }
 
@@ -114,28 +118,28 @@ export function getChangedFiles({ workspaceRoot, target }) {
   assertGitRepository(workspaceRoot);
 
   if (target.kind === "working-tree") {
-    return uniqueLines(
-      [
-        git(workspaceRoot, ["diff", "--name-only"]),
-        git(workspaceRoot, ["diff", "--cached", "--name-only"]),
-        git(workspaceRoot, ["ls-files", "--others", "--exclude-standard"])
-      ].join("\n")
-    );
+    return getWorkingTreeChangedFiles(workspaceRoot);
   }
 
-  return uniqueLines(git(workspaceRoot, ["diff", "--name-only", branchRange(target)]));
+  return filterReviewableFiles(
+    uniqueLines(
+      git(workspaceRoot, withReviewPathspec(["diff", "--name-only", branchRange(target)]))
+    )
+  );
 }
 
 export function getDiff({ workspaceRoot, target, maxBuffer = undefined }) {
   assertGitRepository(workspaceRoot);
 
   if (target.kind !== "working-tree") {
-    return git(workspaceRoot, ["diff", branchRange(target)], { maxBuffer });
+    return git(workspaceRoot, withReviewPathspec(["diff", branchRange(target)]), {
+      maxBuffer
+    });
   }
 
   const parts = [
-    git(workspaceRoot, ["diff", "--cached"], { maxBuffer }),
-    git(workspaceRoot, ["diff"], { maxBuffer })
+    git(workspaceRoot, withReviewPathspec(["diff", "--cached"]), { maxBuffer }),
+    git(workspaceRoot, withReviewPathspec(["diff"]), { maxBuffer })
   ].filter(Boolean);
 
   for (const filePath of getUntrackedFiles(workspaceRoot)) {
@@ -162,6 +166,7 @@ export function buildReviewContext({
   } catch (error) {
     if (isGitOutputLimitError(error)) {
       return {
+        workspaceRoot,
         target,
         files,
         diff: diffSummary({ maxInlineBytes, files }),
@@ -176,6 +181,7 @@ export function buildReviewContext({
 
   if (byteLength <= maxInlineBytes) {
     return {
+      workspaceRoot,
       target,
       files,
       diff,
@@ -184,6 +190,7 @@ export function buildReviewContext({
   }
 
   return {
+    workspaceRoot,
     target,
     files,
     diff: diffSummary({ byteLength, maxInlineBytes, files }),
@@ -297,8 +304,28 @@ function workingTreeTarget() {
 }
 
 function getUntrackedFiles(workspaceRoot) {
-  return uniqueLines(
-    git(workspaceRoot, ["ls-files", "--others", "--exclude-standard"])
+  return filterReviewableFiles(
+    uniqueLines(
+      git(
+        workspaceRoot,
+        withReviewPathspec(["ls-files", "--others", "--exclude-standard"])
+      )
+    )
+  );
+}
+
+function getWorkingTreeChangedFiles(workspaceRoot) {
+  return filterReviewableFiles(
+    uniqueLines(
+      [
+        git(workspaceRoot, withReviewPathspec(["diff", "--name-only"])),
+        git(workspaceRoot, withReviewPathspec(["diff", "--cached", "--name-only"])),
+        git(
+          workspaceRoot,
+          withReviewPathspec(["ls-files", "--others", "--exclude-standard"])
+        )
+      ].join("\n")
+    )
   );
 }
 
@@ -320,6 +347,18 @@ function uniqueLines(text) {
         .filter(Boolean)
     )
   );
+}
+
+function filterReviewableFiles(files) {
+  return files.filter((filePath) => !isDefaultReviewExcluded(filePath));
+}
+
+function isDefaultReviewExcluded(filePath) {
+  return DEFAULT_REVIEW_EXCLUDES.some((pattern) => pattern.test(filePath));
+}
+
+function withReviewPathspec(args) {
+  return [...args, "--", ".", ...DEFAULT_REVIEW_EXCLUDE_PATHSPECS];
 }
 
 function untrackedFileDiff(workspaceRoot, relativePath, options = {}) {
