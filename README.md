@@ -4,6 +4,8 @@ Local Codex plugin that delegates selected tasks and reviews to Claude Code.
 
 ## Install
 
+Requires Node.js 20 or newer and the `claude` CLI on `PATH`.
+
 ```bash
 npm install
 ```
@@ -53,6 +55,7 @@ npm install @anthropic-ai/claude-agent-sdk
 
 Job state is stored under `CODEX_PLUGIN_DATA`, `CLAUDE_CODE_PLUGIN_CODEX_DATA`, or `/tmp/claude-code-companion`.
 Only sessions created by this plugin are eligible for resume.
+The workspace index keeps the 50 most recent jobs. Pruned job files and logs are removed best-effort; failed cleanup does not block saving the current index.
 
 ## Constraints
 
