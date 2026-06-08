@@ -1,4 +1,5 @@
 import { buildAdversarialReviewPrompt } from "./prompts.mjs";
+import { findOnPath } from "./process.mjs";
 
 const READ_TOOLS = ["Read", "Grep", "Glob", "LS"];
 const SHELL_TOOLS = ["Bash"];
@@ -16,7 +17,9 @@ export function buildClaudeOptions({
   permission = "read-only",
   resumeSessionId = null,
   abortController = null,
-  dangerouslyBypassPermissions = false
+  dangerouslyBypassPermissions = false,
+  env = process.env,
+  platform = process.platform
 } = {}) {
   const options = {
     allowedTools:
@@ -30,6 +33,11 @@ export function buildClaudeOptions({
   if (permission === "read-only") {
     options.tools = [...READ_TOOLS];
     options.disallowedTools = [...READ_ONLY_DISALLOWED_TOOLS];
+  }
+
+  const claudeExecutable = resolveClaudeExecutable({ env, platform });
+  if (claudeExecutable) {
+    options.pathToClaudeCodeExecutable = claudeExecutable;
   }
 
   if (dangerouslyBypassPermissions) {
@@ -58,6 +66,10 @@ export function buildClaudeOptions({
   }
 
   return options;
+}
+
+export function resolveClaudeExecutable({ env = process.env, platform = process.platform } = {}) {
+  return findOnPath("claude", env, platform);
 }
 
 export async function collectClaudeMessages(queryResult, { onProgress = null } = {}) {

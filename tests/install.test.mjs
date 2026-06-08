@@ -177,8 +177,8 @@ test("GitHub Actions publish workflow packages and publishes to npm", () => {
   assert.match(workflow, /name: Publish to npm/);
   assert.match(workflow, /branches:\s*\n\s*- main/);
   assert.match(workflow, /branches:[\s\S]*\n\s*- master/);
-  assert.match(workflow, /uses: actions\/checkout@v4/);
-  assert.match(workflow, /uses: actions\/setup-node@v4/);
+  assert.match(workflow, /uses: actions\/checkout@v6/);
+  assert.match(workflow, /uses: actions\/setup-node@v6/);
   assert.match(workflow, /registry-url: https:\/\/registry\.npmjs\.org/);
   assert.match(workflow, /run: npm install/);
   assert.match(workflow, /run: npm test/);

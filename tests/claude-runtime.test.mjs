@@ -1,8 +1,11 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import {
   buildClaudeOptions,
   extractJsonObject,
+  resolveClaudeExecutable,
   runAdversarialReview,
   runClaudeTask,
   runFallbackReview,
@@ -13,6 +16,7 @@ import {
   reviewMessages,
   taskMessages
 } from "./fake-claude-sdk.mjs";
+import { makeTempDir } from "./helpers.mjs";
 
 test("buildClaudeOptions maps workspace-write permissions", () => {
   const options = buildClaudeOptions({
@@ -49,13 +53,31 @@ test("buildClaudeOptions maps read-only permissions without write tools", () => 
 });
 
 test("buildClaudeOptions omits optional fields when absent", () => {
-  const options = buildClaudeOptions();
+  const options = buildClaudeOptions({ env: { PATH: "" } });
 
   assert.equal("cwd" in options, false);
   assert.equal("model" in options, false);
   assert.equal("effort" in options, false);
   assert.equal("resumeSessionId" in options, false);
   assert.equal("signal" in options, false);
+  assert.equal("pathToClaudeCodeExecutable" in options, false);
+});
+
+test("buildClaudeOptions uses Claude Code from PATH when available", () => {
+  const binDir = makeTempDir("claude-bin-");
+  const claudePath = path.join(binDir, "claude");
+  fs.writeFileSync(claudePath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+  const options = buildClaudeOptions({
+    env: { PATH: binDir },
+    platform: "darwin"
+  });
+
+  assert.equal(options.pathToClaudeCodeExecutable, claudePath);
+});
+
+test("resolveClaudeExecutable returns null when PATH has no Claude Code", () => {
+  assert.equal(resolveClaudeExecutable({ env: { PATH: "" } }), null);
 });
 
 test("runClaudeTask returns completed result and calls sdk.query with prompt", async () => {
